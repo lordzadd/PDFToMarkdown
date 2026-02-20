@@ -50,16 +50,16 @@ import Image from "next/image"
 // Define the available models
 const PDF_MODELS = [
   {
-    id: "nougat",
-    name: "Nougat",
-    description: "Meta AI's Nougat model for academic PDF parsing",
+    id: "paddleocr",
+    name: "PaddleOCR (China)",
+    description: "PaddleOCR local model for multilingual OCR and document text extraction",
     strengths: ["Academic papers", "Mathematical formulas", "Tables", "Figures"],
     processingTime: "Medium",
   },
   {
-    id: "gpt4v",
-    name: "GPT-4 with Vision",
-    description: "OpenAI's GPT-4 with vision capabilities",
+    id: "doctr-eu",
+    name: "docTR (Europe)",
+    description: "Mindee docTR local OCR model with layout-aware text extraction",
     strengths: ["General documents", "Context understanding", "Natural language"],
     processingTime: "Slow",
   },
@@ -88,7 +88,7 @@ const PDF_MODELS = [
 
 // Model-specific processing settings
 const MODEL_SETTINGS = {
-  nougat: {
+  paddleocr: {
     defaultQuality: 80,
     supportsEquations: true,
     supportsTableDetection: true,
@@ -101,7 +101,7 @@ const MODEL_SETTINGS = {
       "Markdown conversion",
     ],
   },
-  gpt4v: {
+  "doctr-eu": {
     defaultQuality: 90,
     supportsEquations: true,
     supportsTableDetection: true,
@@ -170,6 +170,14 @@ interface SegmentationOptions {
   segmentationLevel: "basic" | "advanced" | "expert"
 }
 
+interface ExecutionMeta {
+  requested_model: string
+  engine_used: string
+  provider_used: string
+  fallback_used: boolean
+  note?: string | null
+}
+
 // Check if running in Electron
 const isElectron = typeof window !== "undefined" && window.electron !== undefined
 
@@ -177,7 +185,7 @@ const TingyunSnippingTool = () => {
   const [activeTab, setActiveTab] = useState("latex")
   const [isHandwritingMode, setIsHandwritingMode] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [selectedModel, setSelectedModel] = useState("nougat")
+  const [selectedModel, setSelectedModel] = useState("paddleocr")
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [pdfFilePath, setPdfFilePath] = useState<string | null>(null)
   const [isConverting, setIsConverting] = useState(false)
@@ -218,6 +226,7 @@ const TingyunSnippingTool = () => {
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false)
   const [documentSegments, setDocumentSegments] = useState<any[]>([])
   const [activeSegment, setActiveSegment] = useState<number | null>(null)
+  const [executionMeta, setExecutionMeta] = useState<ExecutionMeta | null>(null)
   const [isScreenSourcesDialogOpen, setIsScreenSourcesDialogOpen] = useState(false)
   const [screenSources, setScreenSources] = useState<any[]>([])
   const [selectedScreenSource, setSelectedScreenSource] = useState<string | null>(null)
@@ -321,6 +330,9 @@ const TingyunSnippingTool = () => {
         alert("Please upload a PDF file")
       }
     }
+
+    // Allow selecting the same file path again to retrigger conversion.
+    e.target.value = ""
   }
 
   const handleElectronFileOpen = async () => {
@@ -731,8 +743,15 @@ const TingyunSnippingTool = () => {
     alert("Handwriting analyzed and converted to LaTeX/Markdown!")
   }
 
-  const processWithNougat = async (file: File) => {
-    const steps = MODEL_SETTINGS.nougat.processingSteps
+  const processWithPaddleOCR = async (file: File) => {
+    const commonOptions = {
+      qualityLevel,
+      preserveTables,
+      preserveEquations,
+      segmentation: segmentationOptions,
+    }
+
+    const steps = MODEL_SETTINGS.paddleocr.processingSteps
     const totalSteps = steps.length
 
     for (let i = 0; i < totalSteps; i++) {
@@ -744,8 +763,9 @@ const TingyunSnippingTool = () => {
     try {
       const formData = new FormData()
       formData.append('pdf', file)
+      formData.append('options', JSON.stringify(commonOptions))
 
-      const response = await fetch('http://localhost:3001/api/nougat/process', {
+      const response = await fetch('/api/convert/paddleocr', {
         method: 'POST',
         body: formData
       })
@@ -757,6 +777,8 @@ const TingyunSnippingTool = () => {
       const data = await response.json()
       setDocumentSegments(data.segments)
       setActiveSegment(0)
+      setExecutionMeta(data.execution ?? null)
+      console.info("Model execution", data.execution)
 
       return data.markdown
     } catch (error) {
@@ -765,8 +787,16 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const processWithGPT4V = async (file: File) => {
-    const steps = MODEL_SETTINGS.gpt4v.processingSteps
+  const processWithDoctrEu = async (file: File) => {
+    const commonOptions = {
+      qualityLevel,
+      preserveTables,
+      preserveEquations,
+      segmentation: segmentationOptions,
+      maxPages: 2,
+    }
+
+    const steps = MODEL_SETTINGS["doctr-eu"].processingSteps
     const totalSteps = steps.length
 
     for (let i = 0; i < totalSteps; i++) {
@@ -779,29 +809,39 @@ const TingyunSnippingTool = () => {
       const formData = new FormData()
       // Ensure file field name matches multer's expected field name
       formData.append('pdf', file, file.name)
+      formData.append('options', JSON.stringify(commonOptions))
 
-      const response = await fetch('http://localhost:3001/api/gpt4v/analyze', {
+      const response = await fetch('/api/convert/doctr-eu', {
         method: 'POST',
         body: formData
       })
 
       if (!response.ok) {
         const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to process with GPT-4V')
+        throw new Error(errorData.error || 'Failed to process with docTR')
       }
 
       const data = await response.json()
       setDocumentSegments(data.segments)
       setActiveSegment(0)
+      setExecutionMeta(data.execution ?? null)
+      console.info("Model execution", data.execution)
 
       return data.markdown
     } catch (error) {
-      console.error('Error processing with GPT-4V:', error)
+      console.error('Error processing with docTR:', error)
       throw error
     }
   }
 
   const processWithLayoutLM = async (file: File) => {
+    const commonOptions = {
+      qualityLevel,
+      preserveTables,
+      preserveEquations,
+      segmentation: segmentationOptions,
+    }
+
     const steps = MODEL_SETTINGS.layoutlm.processingSteps
     const totalSteps = steps.length
 
@@ -814,8 +854,9 @@ const TingyunSnippingTool = () => {
     try {
       const formData = new FormData()
       formData.append('pdf', file)
+      formData.append('options', JSON.stringify(commonOptions))
 
-      const response = await fetch('http://localhost:3001/api/layoutlm/process', {
+      const response = await fetch('/api/convert/layoutlm', {
         method: 'POST',
         body: formData
       })
@@ -827,6 +868,8 @@ const TingyunSnippingTool = () => {
       const data = await response.json()
       setDocumentSegments(data.segments)
       setActiveSegment(0)
+      setExecutionMeta(data.execution ?? null)
+      console.info("Model execution", data.execution)
 
       return data.markdown
     } catch (error) {
@@ -836,6 +879,13 @@ const TingyunSnippingTool = () => {
   }
 
   const processWithDonut = async (file: File) => {
+    const commonOptions = {
+      qualityLevel,
+      preserveTables,
+      preserveEquations,
+      segmentation: segmentationOptions,
+    }
+
     const steps = MODEL_SETTINGS.donut.processingSteps
     const totalSteps = steps.length
 
@@ -848,8 +898,9 @@ const TingyunSnippingTool = () => {
     try {
       const formData = new FormData()
       formData.append('pdf', file)
+      formData.append('options', JSON.stringify(commonOptions))
 
-      const response = await fetch('http://localhost:3001/api/donut/process', {
+      const response = await fetch('/api/convert/donut', {
         method: 'POST',
         body: formData
       })
@@ -861,6 +912,8 @@ const TingyunSnippingTool = () => {
       const data = await response.json()
       setDocumentSegments(data.segments)
       setActiveSegment(0)
+      setExecutionMeta(data.execution ?? null)
+      console.info("Model execution", data.execution)
 
       return data.markdown
     } catch (error) {
@@ -870,6 +923,13 @@ const TingyunSnippingTool = () => {
   }
 
   const processWithDocling = async (file: File) => {
+    const commonOptions = {
+      qualityLevel,
+      preserveTables,
+      preserveEquations,
+      segmentation: segmentationOptions,
+    }
+
     const steps = MODEL_SETTINGS.docling.processingSteps
     const totalSteps = steps.length
 
@@ -882,17 +942,9 @@ const TingyunSnippingTool = () => {
     try {
       const formData = new FormData()
       formData.append('pdf', file)
-      formData.append('options', JSON.stringify({
-        segmentation: {
-          enableTextSegmentation: true,
-          enableLayoutSegmentation: true,
-          enableTableSegmentation: true,
-          enableImageSegmentation: false,
-          segmentationLevel: "advanced"
-        }
-      }))
+      formData.append('options', JSON.stringify(commonOptions))
 
-      const response = await fetch('http://localhost:3001/api/docling/process', {
+      const response = await fetch('/api/convert/docling', {
         method: 'POST',
         body: formData
       })
@@ -904,6 +956,8 @@ const TingyunSnippingTool = () => {
       const data = await response.json()
       setDocumentSegments(data.segments)
       setActiveSegment(0)
+      setExecutionMeta(data.execution ?? null)
+      console.info("Model execution", data.execution)
 
       return data.markdown
     } catch (error) {
@@ -919,17 +973,18 @@ const TingyunSnippingTool = () => {
     setConversionProgress(0)
     setShowResult(false)
     setCurrentStep("Initializing...")
+    setExecutionMeta(null)
 
     try {
       let result = ""
 
       // Process with selected model
       switch (selectedModel) {
-        case "nougat":
-          result = await processWithNougat(pdfFile)
+        case "paddleocr":
+          result = await processWithPaddleOCR(pdfFile)
           break
-        case "gpt4v":
-          result = await processWithGPT4V(pdfFile)
+        case "doctr-eu":
+          result = await processWithDoctrEu(pdfFile)
           break
         case "layoutlm":
           result = await processWithLayoutLM(pdfFile)
@@ -941,7 +996,7 @@ const TingyunSnippingTool = () => {
           result = await processWithDocling(pdfFile)
           break
         default:
-          result = await processWithNougat(pdfFile)
+          result = await processWithPaddleOCR(pdfFile)
       }
 
       // Apply quality settings
@@ -1470,6 +1525,15 @@ const TingyunSnippingTool = () => {
                   Download {activeTab === "markdown" ? "Markdown" : "LaTeX"}
                 </Button>
               </div>
+              {executionMeta && (
+                <div className="mb-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+                  <span className="font-medium">Execution:</span>{" "}
+                  requested <span className="font-mono">{executionMeta.requested_model}</span>, ran{" "}
+                  <span className="font-mono">{executionMeta.engine_used}</span>
+                  {executionMeta.fallback_used ? " (fallback)" : ""}
+                  {executionMeta.note ? ` - ${executionMeta.note}` : ""}
+                </div>
+              )}
               <Textarea
                 value={
                   activeTab === "markdown"
@@ -1502,7 +1566,7 @@ const TingyunSnippingTool = () => {
               <div className="p-6 border-2 border-dashed rounded-lg border-gray-300 flex flex-col items-center gap-2 max-w-lg mx-auto">
                 <Upload size={32} className="text-gray-400" />
                 <p className="text-gray-500">Click the document icon in the toolbar to upload a PDF</p>
-                <p className="text-xs text-gray-400">Supported models: Nougat, GPT-4V, LayoutLM, Donut, and Docling</p>
+                <p className="text-xs text-gray-400">Supported models: PaddleOCR, docTR (Europe), LayoutLM, Donut, and Docling</p>
                 {isElectron && (
                   <p className="text-xs text-purple-500 mt-1">Running in desktop mode with enhanced capabilities</p>
                 )}

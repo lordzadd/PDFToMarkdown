@@ -1,0 +1,78 @@
+{
+  "models": [
+    {
+      "id": "native",
+      "provider": "local",
+      "local_model": "native",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations"],
+      "latency_hint": "fast",
+      "cost_hint": "local-cpu"
+    },
+    {
+      "id": "ocr-only",
+      "provider": "local",
+      "local_model": "ocr-only",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations"],
+      "latency_hint": "medium",
+      "cost_hint": "local-cpu"
+    },
+    {
+      "id": "paddleocr",
+      "provider": "local",
+      "local_model": "paddleocr",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "maxPages"],
+      "latency_hint": "medium",
+      "cost_hint": "local-cpu"
+    },
+    {
+      "id": "doctr-eu",
+      "provider": "local",
+      "local_model": "doctr-eu",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "maxPages"],
+      "latency_hint": "slow",
+      "cost_hint": "local-cpu"
+    },
+    {
+      "id": "layoutlm",
+      "provider": "local",
+      "local_model": "layoutlm",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations"],
+      "latency_hint": "fast",
+      "cost_hint": "local-cpu"
+    },
+    {
+      "id": "donut",
+      "provider": "local",
+      "local_model": "donut",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations"],
+      "latency_hint": "medium",
+      "cost_hint": "local-cpu"
+    },
+    {
+      "id": "docling",
+      "provider": "local",
+      "local_model": "docling",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "segmentation"],
+      "latency_hint": "medium",
+      "cost_hint": "local-gpu"
+    },
+    {
+      "id": "hf-space-template",
+      "provider": "hf_space",
+      "enabled": false,
+      "description": "Template for adding a Hugging Face Space OCR adapter",
+      "capabilities": ["ocr"],
+      "space_id": "owner/space-name",
+      "api_name": "/predict",
+      "fallback_model": "native",
+      "hf_token_env": "HF_TOKEN"
+    }
+  ]
+}
