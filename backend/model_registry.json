@@ -46,11 +46,11 @@
       "cost_hint": "local-cpu"
     },
     {
-      "id": "donut",
+      "id": "markitdown",
       "provider": "local",
-      "local_model": "donut",
+      "local_model": "markitdown",
       "enabled": true,
-      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations"],
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "maxPages"],
       "latency_hint": "medium",
       "cost_hint": "local-cpu"
     },
@@ -59,9 +59,18 @@
       "provider": "local",
       "local_model": "docling",
       "enabled": true,
-      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "segmentation"],
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "segmentation", "maxPages"],
       "latency_hint": "medium",
       "cost_hint": "local-gpu"
+    },
+    {
+      "id": "zerox",
+      "provider": "local",
+      "local_model": "zerox",
+      "enabled": true,
+      "supports_options": ["qualityLevel", "preserveTables", "preserveEquations", "maxPages"],
+      "latency_hint": "slow",
+      "cost_hint": "api"
     },
     {
       "id": "hf-space-template",

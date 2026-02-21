@@ -57,8 +57,9 @@ test("web ui functions and model conversions", async ({ page }, testInfo) => {
     { id: "paddleocr", label: "PaddleOCR (China)", expectedPattern: /Execution:.*requested paddleocr, ran (paddleocr|ocr-only)/ },
     { id: "doctr-eu", label: "docTR (Europe)", expectedPattern: /Execution:.*requested doctr-eu, ran (doctr-eu|ocr-only)/ },
     { id: "layoutlm", label: "LayoutLM", expectedPattern: /Execution:.*requested layoutlm, ran (layoutlm|ocr-only)/ },
-    { id: "donut", label: "Donut", expectedPattern: /Execution:.*requested donut, ran donut/ },
+    { id: "markitdown", label: "MarkItDown (Microsoft)", expectedPattern: /Execution:.*requested markitdown, ran (markitdown|ocr-only)/ },
     { id: "docling", label: "Docling", expectedPattern: /Execution:.*requested docling, ran (docling|ocr-only)/ },
+    { id: "zerox", label: "ZeroX (OmniAI)", expectedPattern: /Execution:.*requested zerox, ran (zerox|ocr-only)/ },
   ]
 
   for (const model of models) {

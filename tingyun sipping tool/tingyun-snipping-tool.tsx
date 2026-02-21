@@ -71,10 +71,10 @@ const PDF_MODELS = [
     processingTime: "Fast",
   },
   {
-    id: "donut",
-    name: "Donut",
-    description: "Document understanding transformer model",
-    strengths: ["Structured documents", "Fast processing", "Low resource usage"],
+    id: "markitdown",
+    name: "MarkItDown (Microsoft)",
+    description: "Microsoft MarkItDown document-to-markdown converter",
+    strengths: ["Robust markdown output", "Broad document support", "Good structure extraction"],
     processingTime: "Very Fast",
   },
   {
@@ -83,6 +83,13 @@ const PDF_MODELS = [
     description: "Specialized model for document linguistics and segmentation",
     strengths: ["Multilingual support", "Document segmentation", "Linguistic analysis", "OCR enhancement"],
     processingTime: "Medium",
+  },
+  {
+    id: "zerox",
+    name: "ZeroX (OmniAI)",
+    description: "OmniAI ZeroX OCR adapter with LLM-assisted extraction",
+    strengths: ["Complex layouts", "LLM-assisted parsing", "OCR fallback"],
+    processingTime: "Slow",
   },
 ]
 
@@ -122,12 +129,12 @@ const MODEL_SETTINGS = {
     supportsSegmentation: true,
     processingSteps: ["Layout analysis", "Text extraction", "Structure detection", "Markdown formatting"],
   },
-  donut: {
+  markitdown: {
     defaultQuality: 70,
     supportsEquations: false,
     supportsTableDetection: false,
     supportsSegmentation: false,
-    processingSteps: ["Document parsing", "Text recognition", "Markdown generation"],
+    processingSteps: ["Document parsing", "Markdown extraction", "Post-processing"],
   },
   docling: {
     defaultQuality: 85,
@@ -142,6 +149,13 @@ const MODEL_SETTINGS = {
       "Multilingual processing",
       "Markdown generation",
     ],
+  },
+  zerox: {
+    defaultQuality: 80,
+    supportsEquations: true,
+    supportsTableDetection: true,
+    supportsSegmentation: false,
+    processingSteps: ["PDF analysis", "OCR/LLM extraction", "Markdown generation"],
   },
 }
 
@@ -178,10 +192,10 @@ interface ExecutionMeta {
   note?: string | null
 }
 
-// Check if running in Electron
-const isElectron = typeof window !== "undefined" && window.electron !== undefined
+type PageLimitOption = "full" | "1" | "2" | "5" | "10" | "20"
 
 const TingyunSnippingTool = () => {
+  const [isElectron, setIsElectron] = useState(false)
   const [activeTab, setActiveTab] = useState("latex")
   const [isHandwritingMode, setIsHandwritingMode] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -199,6 +213,7 @@ const TingyunSnippingTool = () => {
   )
   const [preserveTables, setPreserveTables] = useState(true)
   const [preserveEquations, setPreserveEquations] = useState(true)
+  const [pageLimit, setPageLimit] = useState<PageLimitOption>("full")
   const [segmentationOptions, setSegmentationOptions] = useState<SegmentationOptions>({
     enableTextSegmentation: true,
     enableLayoutSegmentation: true,
@@ -235,6 +250,10 @@ const TingyunSnippingTool = () => {
   useEffect(() => {
     setQualityLevel(MODEL_SETTINGS[selectedModel as keyof typeof MODEL_SETTINGS].defaultQuality)
   }, [selectedModel])
+
+  useEffect(() => {
+    setIsElectron(typeof window !== "undefined" && window.electron !== undefined)
+  }, [])
 
   // Initialize canvas when handwriting mode is activated
   useEffect(() => {
@@ -743,13 +762,19 @@ const TingyunSnippingTool = () => {
     alert("Handwriting analyzed and converted to LaTeX/Markdown!")
   }
 
-  const processWithPaddleOCR = async (file: File) => {
-    const commonOptions = {
+  const buildCommonOptions = () => {
+    const maxPages = pageLimit === "full" ? undefined : Number.parseInt(pageLimit, 10)
+    return {
       qualityLevel,
       preserveTables,
       preserveEquations,
       segmentation: segmentationOptions,
+      ...(maxPages ? { maxPages } : {}),
     }
+  }
+
+  const processWithPaddleOCR = async (file: File) => {
+    const commonOptions = buildCommonOptions()
 
     const steps = MODEL_SETTINGS.paddleocr.processingSteps
     const totalSteps = steps.length
@@ -788,13 +813,7 @@ const TingyunSnippingTool = () => {
   }
 
   const processWithDoctrEu = async (file: File) => {
-    const commonOptions = {
-      qualityLevel,
-      preserveTables,
-      preserveEquations,
-      segmentation: segmentationOptions,
-      maxPages: 2,
-    }
+    const commonOptions = buildCommonOptions()
 
     const steps = MODEL_SETTINGS["doctr-eu"].processingSteps
     const totalSteps = steps.length
@@ -835,12 +854,7 @@ const TingyunSnippingTool = () => {
   }
 
   const processWithLayoutLM = async (file: File) => {
-    const commonOptions = {
-      qualityLevel,
-      preserveTables,
-      preserveEquations,
-      segmentation: segmentationOptions,
-    }
+    const commonOptions = buildCommonOptions()
 
     const steps = MODEL_SETTINGS.layoutlm.processingSteps
     const totalSteps = steps.length
@@ -878,15 +892,10 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const processWithDonut = async (file: File) => {
-    const commonOptions = {
-      qualityLevel,
-      preserveTables,
-      preserveEquations,
-      segmentation: segmentationOptions,
-    }
+  const processWithMarkItDown = async (file: File) => {
+    const commonOptions = buildCommonOptions()
 
-    const steps = MODEL_SETTINGS.donut.processingSteps
+    const steps = MODEL_SETTINGS.markitdown.processingSteps
     const totalSteps = steps.length
 
     for (let i = 0; i < totalSteps; i++) {
@@ -900,13 +909,13 @@ const TingyunSnippingTool = () => {
       formData.append('pdf', file)
       formData.append('options', JSON.stringify(commonOptions))
 
-      const response = await fetch('/api/convert/donut', {
+      const response = await fetch('/api/convert/markitdown', {
         method: 'POST',
         body: formData
       })
 
       if (!response.ok) {
-        throw new Error('Failed to process with Donut')
+        throw new Error('Failed to process with MarkItDown')
       }
 
       const data = await response.json()
@@ -917,18 +926,52 @@ const TingyunSnippingTool = () => {
 
       return data.markdown
     } catch (error) {
-      console.error('Error processing with Donut:', error)
+      console.error('Error processing with MarkItDown:', error)
+      throw error
+    }
+  }
+
+  const processWithZeroX = async (file: File) => {
+    const commonOptions = buildCommonOptions()
+
+    const steps = MODEL_SETTINGS.zerox.processingSteps
+    const totalSteps = steps.length
+
+    for (let i = 0; i < totalSteps; i++) {
+      setCurrentStep(steps[i])
+      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
+      await new Promise((resolve) => setTimeout(resolve, 850))
+    }
+
+    try {
+      const formData = new FormData()
+      formData.append('pdf', file)
+      formData.append('options', JSON.stringify(commonOptions))
+
+      const response = await fetch('/api/convert/zerox', {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to process with ZeroX')
+      }
+
+      const data = await response.json()
+      setDocumentSegments(data.segments)
+      setActiveSegment(0)
+      setExecutionMeta(data.execution ?? null)
+      console.info("Model execution", data.execution)
+
+      return data.markdown
+    } catch (error) {
+      console.error('Error processing with ZeroX:', error)
       throw error
     }
   }
 
   const processWithDocling = async (file: File) => {
-    const commonOptions = {
-      qualityLevel,
-      preserveTables,
-      preserveEquations,
-      segmentation: segmentationOptions,
-    }
+    const commonOptions = buildCommonOptions()
 
     const steps = MODEL_SETTINGS.docling.processingSteps
     const totalSteps = steps.length
@@ -989,11 +1032,14 @@ const TingyunSnippingTool = () => {
         case "layoutlm":
           result = await processWithLayoutLM(pdfFile)
           break
-        case "donut":
-          result = await processWithDonut(pdfFile)
+        case "markitdown":
+          result = await processWithMarkItDown(pdfFile)
           break
         case "docling":
           result = await processWithDocling(pdfFile)
+          break
+        case "zerox":
+          result = await processWithZeroX(pdfFile)
           break
         default:
           result = await processWithPaddleOCR(pdfFile)
@@ -1134,13 +1180,14 @@ const TingyunSnippingTool = () => {
   }
 
   const handleDownloadLatex = async () => {
-    if (!latexResult) return
+    const latexToSave = latexResult || (markdownResult ? convertMarkdownToLatex(markdownResult) : "")
+    if (!latexToSave) return
 
     if (isElectron) {
       try {
         const fileName = pdfFile?.name.replace(".pdf", "") || "converted"
         const success = await window.electron.fileSystem.saveFile({
-          content: latexResult,
+          content: latexToSave,
           defaultPath: `${fileName}.tex`,
           filters: [{ name: "LaTeX Files", extensions: ["tex"] }],
         })
@@ -1154,7 +1201,7 @@ const TingyunSnippingTool = () => {
       }
     } else {
       // Browser download fallback
-      const blob = new Blob([latexResult], { type: "text/plain" })
+      const blob = new Blob([latexToSave], { type: "text/plain" })
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
@@ -1566,7 +1613,7 @@ const TingyunSnippingTool = () => {
               <div className="p-6 border-2 border-dashed rounded-lg border-gray-300 flex flex-col items-center gap-2 max-w-lg mx-auto">
                 <Upload size={32} className="text-gray-400" />
                 <p className="text-gray-500">Click the document icon in the toolbar to upload a PDF</p>
-                <p className="text-xs text-gray-400">Supported models: PaddleOCR, docTR (Europe), LayoutLM, Donut, and Docling</p>
+                <p className="text-xs text-gray-400">Supported models: PaddleOCR, docTR (Europe), LayoutLM, MarkItDown, Docling, and ZeroX</p>
                 {isElectron && (
                   <p className="text-xs text-purple-500 mt-1">Running in desktop mode with enhanced capabilities</p>
                 )}
@@ -1580,9 +1627,10 @@ const TingyunSnippingTool = () => {
       <div className="flex justify-center p-4">
         <Button
           className="px-12 py-2 bg-purple-100 hover:bg-purple-200 text-purple-600 rounded-md"
-          disabled={isConverting}
+          disabled={isConverting || !showResult}
+          onClick={handleDownloadContent}
         >
-          Save
+          Save {activeTab === "markdown" ? "Markdown" : "LaTeX"}
         </Button>
       </div>
 
@@ -1689,6 +1737,37 @@ const TingyunSnippingTool = () => {
                     )}
                   </Label>
                 </div>
+              </div>
+
+              <div className="space-y-3 mt-6">
+                <h3 className="text-sm font-medium">Page Limit</h3>
+                <p className="text-xs text-gray-500">Choose full OCR or a faster preview on first pages only</p>
+                <RadioGroup value={pageLimit} onValueChange={(value: PageLimitOption) => setPageLimit(value)}>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="full" id="page-limit-full" />
+                    <Label htmlFor="page-limit-full">Full document (default)</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="1" id="page-limit-1" />
+                    <Label htmlFor="page-limit-1">First 1 page</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="2" id="page-limit-2" />
+                    <Label htmlFor="page-limit-2">First 2 pages</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="5" id="page-limit-5" />
+                    <Label htmlFor="page-limit-5">First 5 pages</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="10" id="page-limit-10" />
+                    <Label htmlFor="page-limit-10">First 10 pages</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="20" id="page-limit-20" />
+                    <Label htmlFor="page-limit-20">First 20 pages</Label>
+                  </div>
+                </RadioGroup>
               </div>
             </TabsContent>
 
@@ -1830,7 +1909,7 @@ const TingyunSnippingTool = () => {
                         <p className="text-xs text-gray-500">{item.date}</p>
                       </div>
                     </div>
-                    <Button variant="ghost" size="sm">
+                    <Button variant="ghost" size="sm" onClick={() => handleHistoryItemClick(item)}>
                       Load
                     </Button>
                   </div>
@@ -1870,7 +1949,7 @@ const TingyunSnippingTool = () => {
                         <p className="text-xs text-gray-500">{source.displayId}</p>
                       </div>
                     </div>
-                    <Button variant="ghost" size="sm">
+                    <Button variant="ghost" size="sm" onClick={() => handleScreenSourceSelect(source.id)}>
                       Select
                     </Button>
                   </div>

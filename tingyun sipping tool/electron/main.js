@@ -1,33 +1,10 @@
-const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen, contextBridge } = require("electron")
+const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen } = require("electron")
 const path = require("path")
 const fs = require("fs")
-const isDev = require("electron-is-dev")
-const server = require('./server')
-
-// At the top of your main.js file, add:
-contextBridge.exposeInMainWorld('electron', {
-  fileSystem: {
-    openFile: () => ipcRenderer.invoke('open-file-dialog'),
-    saveFile: (options) => ipcRenderer.invoke('save-file', options)
-  },
-  windowControls: {
-    minimize: () => ipcRenderer.send('minimize-window'),
-    maximize: () => ipcRenderer.send('maximize-window'),
-    close: () => ipcRenderer.send('close-window')
-  },
-  screenCapture: {
-    getSources: () => ipcRenderer.invoke('get-screen-sources')
-  }
-})
+const isDev = !app.isPackaged
 
 // Keep a global reference of the window object to prevent garbage collection
 let mainWindow
-
-// Start the backend server
-const PORT = 3001
-server.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`)
-})
 
 function createWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
@@ -45,15 +22,16 @@ function createWindow() {
     frame: false, // Frameless window for custom title bar
   })
 
-  // Load the Next.js app
-  const startUrl = isDev
-    ? "http://localhost:3000"
-    : `file://${path.join(__dirname, "../out/index.html")}`
+  // Load the Next.js app. Prefer static export when present, otherwise use a running local server.
+  const packagedIndexPath = path.join(__dirname, "../out/index.html")
+  const startUrl = !isDev && fs.existsSync(packagedIndexPath)
+    ? `file://${packagedIndexPath}`
+    : (process.env.ELECTRON_START_URL || "http://localhost:3000")
 
   mainWindow.loadURL(startUrl)
 
   // Open DevTools in development mode
-  if (isDev) {
+  if (isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== "1") {
     mainWindow.webContents.openDevTools()
   }
 
@@ -102,6 +80,17 @@ ipcMain.on("close-window", () => {
 
 // File system operations
 ipcMain.handle("open-file-dialog", async (event, options) => {
+  const forcedFilePath = process.env.E2E_OPEN_FILE_PATH
+  if (forcedFilePath && fs.existsSync(forcedFilePath)) {
+    const fileName = path.basename(forcedFilePath)
+    const fileData = fs.readFileSync(forcedFilePath)
+    return {
+      path: forcedFilePath,
+      name: fileName,
+      data: fileData.toString("base64"),
+    }
+  }
+
   const { filePaths } = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [{ name: "PDF Files", extensions: ["pdf"] }],
@@ -124,6 +113,20 @@ ipcMain.handle("open-file-dialog", async (event, options) => {
 })
 
 ipcMain.handle("save-file", async (event, { content, defaultPath, filters }) => {
+  const forcedSaveDir = process.env.E2E_SAVE_DIR
+  if (forcedSaveDir) {
+    fs.mkdirSync(forcedSaveDir, { recursive: true })
+    const targetPath = path.join(forcedSaveDir, defaultPath || "output.txt")
+    fs.writeFileSync(targetPath, content)
+    return true
+  }
+
+  const forcedSavePath = process.env.E2E_SAVE_FILE_PATH
+  if (forcedSavePath) {
+    fs.writeFileSync(forcedSavePath, content)
+    return true
+  }
+
   const { filePath } = await dialog.showSaveDialog(mainWindow, {
     defaultPath,
     filters,
@@ -169,31 +172,13 @@ ipcMain.handle("capture-screen-area", async (event, bounds) => {
 
   if (sources.length === 0) return null
 
-  // Get the primary display screenshot
+  // Crop directly from nativeImage in main process.
   const screenshot = sources[0].thumbnail
-
-  // Create a canvas to crop the area
-  const canvas = new OffscreenCanvas(width, height)
-  const ctx = canvas.getContext("2d")
-
-  // Draw the cropped area
-  ctx.drawImage(
-    screenshot,
-    x * 2,
-    y * 2,
-    width * 2,
-    height * 2, // Source coordinates (adjusted for thumbnailSize)
-    0,
-    0,
-    width,
-    height // Destination coordinates
-  )
-
-  // Convert to base64
-  const blob = await canvas.convertToBlob()
-  const reader = new FileReader()
-  return new Promise((resolve) => {
-    reader.onloadend = () => resolve(reader.result)
-    reader.readAsDataURL(blob)
+  const cropped = screenshot.crop({
+    x: Math.max(0, Math.floor(x * 2)),
+    y: Math.max(0, Math.floor(y * 2)),
+    width: Math.max(1, Math.floor(width * 2)),
+    height: Math.max(1, Math.floor(height * 2)),
   })
+  return cropped.toDataURL()
 })

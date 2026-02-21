@@ -58,7 +58,7 @@ class PaddleOcrConverter:
             markdown = get_ocr_converter().convert(pdf_path, None)
             return apply_common_options(markdown, options)
 
-        max_pages = 2
+        max_pages = None
         if isinstance(options, dict) and isinstance(options.get("maxPages"), int):
             max_pages = max(1, min(40, int(options["maxPages"])))
 
@@ -67,7 +67,8 @@ class PaddleOcrConverter:
             pages_output: list[str] = []
             with tempfile.TemporaryDirectory(prefix="paddleocr_") as tmp:
                 images = convert_from_path(pdf_path, dpi=96, output_folder=tmp, fmt="png")
-                for idx, image in enumerate(images[:max_pages], start=1):
+                images_to_process = images[:max_pages] if max_pages else images
+                for idx, image in enumerate(images_to_process, start=1):
                     result = ocr.ocr(np.array(image))
                     lines: list[str] = []
                     if result:

@@ -53,7 +53,7 @@ class DoctrEuConverter:
             markdown = get_ocr_converter().convert(pdf_path, None)
             return apply_common_options(markdown, options)
 
-        max_pages = 10
+        max_pages = None
         if isinstance(options, dict) and isinstance(options.get("maxPages"), int):
             max_pages = max(1, min(30, int(options["maxPages"])))
 
@@ -62,7 +62,8 @@ class DoctrEuConverter:
             pages_output: list[str] = []
             with tempfile.TemporaryDirectory(prefix="doctr_eu_") as tmp:
                 images = convert_from_path(pdf_path, dpi=230, output_folder=tmp, fmt="png")
-                for idx, image in enumerate(images[:max_pages], start=1):
+                images_to_process = images[:max_pages] if max_pages else images
+                for idx, image in enumerate(images_to_process, start=1):
                     doc = predictor([np.array(image)])
                     page_text: list[str] = []
                     if doc and getattr(doc, "pages", None):

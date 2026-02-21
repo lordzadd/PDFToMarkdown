@@ -9,12 +9,12 @@
     "test:web:e2e": "bash ./scripts/cleanup-test-processes.sh && env -u NO_COLOR /usr/bin/arch -arm64 playwright test --config=playwright.config.ts",
     "test:web:e2e:headed": "bash ./scripts/cleanup-test-processes.sh && env -u NO_COLOR /usr/bin/arch -arm64 playwright test --config=playwright.config.ts --headed",
     "build": "next build",
-    "backend:dev": "sh -c 'export PATH=\"/Users/ritviksharma/Library/Python/3.9/bin:$PATH\"; export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=${PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK:-True}; PORT=${FASTAPI_PORT:-8014}; if [ \"$(uname -m)\" = \"arm64\" ]; then /usr/bin/arch -arm64 /usr/bin/python3 -m uvicorn backend.app.main:app --port $PORT --app-dir ..; else /usr/bin/python3 -m uvicorn backend.app.main:app --port $PORT --app-dir ..; fi'",
+    "backend:dev": "bash ./scripts/start-backend-dev.sh",
     "start": "next start",
     "lint": "next lint",
-    "electron:dev": "sh -c 'PORT=${FASTAPI_PORT:-8014}; API=${FASTAPI_BASE_URL:-http://127.0.0.1:$PORT}; concurrently -k \"FASTAPI_PORT=$PORT npm run backend:dev\" \"FASTAPI_BASE_URL=$API npm run dev\" \"npm run server\" \"wait-on http://localhost:3000 && wait-on http://localhost:3001 && wait-on $API && electron .\"'",
+    "electron:dev": "bash ./scripts/start-electron-dev.sh",
     "electron:build": "next build && electron-builder",
-    "electron:start": "electron .",
+    "electron:start": "bash ./scripts/start-electron-dev.sh",
     "server": "node electron/server.js"
   },
   "dependencies": {
