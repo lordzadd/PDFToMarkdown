@@ -480,23 +480,9 @@ const TingyunSnippingTool = () => {
 
   const handleScreenSnip = async () => {
     if (isElectron) {
-      try {
-        const permissionStatus = await window.electron.screenCapture.getPermissionStatus()
-        const sources = await window.electron.screenCapture.getSources()
-        const effectiveStatus = sources.length > 0 ? "granted" : permissionStatus
-        setScreenAccessStatus(effectiveStatus)
-        setScreenSources(sources)
-        setIsScreenSourcesDialogOpen(true)
-        logInfo("Screen sources dialog opened", {
-          permissionStatus,
-          effectiveStatus,
-          sourceCount: sources.length,
-        })
-      } catch (error) {
-        logError("Error getting screen sources", { error: String(error) })
-        const msg = error instanceof Error ? error.message : "Unknown error"
-        alert(`Screen capture unavailable: ${msg}. On macOS, grant Screen Recording permission to Electron.`)
-      }
+      // Default to native capture in desktop mode to avoid repeated macOS TCC prompts
+      // that can occur with desktop source enumeration in unsigned/ad-hoc builds.
+      await handleSystemScreenCapture()
     } else {
       setIsScreenSnippingMode(true)
       setIsSelectionMode(false)

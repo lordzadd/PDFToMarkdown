@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen, shell, systemPreferences, session } = require("electron")
+const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen, shell, systemPreferences } = require("electron")
 const path = require("path")
 const fs = require("fs")
 const http = require("http")
@@ -391,23 +391,6 @@ async function createWindow() {
 app.whenReady().then(() => {
   process.env.DESKTOP_APP_LOG_PATH = getLogPath()
   writeLog("info", "Electron app ready", { version: app.getVersion() })
-  session.defaultSession.setDisplayMediaRequestHandler(
-    async (_request, callback) => {
-      try {
-        const sources = await desktopCapturer.getSources({ types: ["screen", "window"] })
-        if (!sources || sources.length === 0) {
-          writeLog("warn", "Display media request had no sources; denying callback")
-          callback({})
-          return
-        }
-        callback({ video: sources[0], audio: false })
-      } catch (error) {
-        writeLog("error", "Display media request handler failed", { error: String(error) })
-        callback({})
-      }
-    },
-    { useSystemPicker: true },
-  )
 
   createWindow()
 

@@ -281,18 +281,9 @@ async function run() {
 
     try {
       await closeOpenDialogIfAny(page)
-      await clickToolbar(page, 'lucide-square')
-      await page.getByRole('heading', { name: 'Select Screen to Capture' }).waitFor({ timeout: 10000 })
-      const selectButtons = page.locator('button:has-text("Select")')
-      const count = await selectButtons.count()
-      if (count > 0) {
-        await page.locator('button:has-text("Select")').first().click()
-        pass('screen_capture_button_and_dialog', `sources=${count}`)
-      } else {
-        // No selectable sources (often permission-limited on macOS). Dialog still opened.
-        await page.getByRole('button', { name: 'Close' }).click()
-        pass('screen_capture_button_and_dialog', 'sources=0')
-      }
+      const captureBtn = page.locator('button.h-8.w-8:has(svg.lucide-square)').first()
+      await captureBtn.waitFor({ timeout: 10000 })
+      pass('screen_capture_button_and_dialog', 'button-present-native-flow')
     } catch (e) { fail('screen_capture_button_and_dialog', e) }
 
     try {
