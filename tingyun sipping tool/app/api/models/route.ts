@@ -24,8 +24,9 @@ export async function GET() {
           { model_id: 'markitdown', description: 'MarkItDown mode (backend unavailable).' },
           { model_id: 'docling', description: 'Docling mode (backend unavailable).' },
           { model_id: 'zerox', description: 'ZeroX mode (backend unavailable).' },
+          { model_id: 'ocr-only', description: 'OCR-only mode (backend unavailable).' },
         ],
-        warning: 'Model backend unavailable. Start FastAPI locally or configure FASTAPI_BASE_URL.',
+        warning: `Model backend unavailable at ${baseUrl}. Start FastAPI locally or configure FASTAPI_BASE_URL.`,
       },
       { status: 200 },
     )

@@ -19,7 +19,20 @@ contextBridge.exposeInMainWorld("electron", {
   // Screen capture
   screenCapture: {
     getSources: () => ipcRenderer.invoke("get-screen-sources"),
+    getPermissionStatus: () => ipcRenderer.invoke("get-screen-access-status"),
+    openPermissionSettings: () => ipcRenderer.invoke("open-screen-permission-settings"),
     captureScreen: (sourceId) => ipcRenderer.invoke("capture-screen", sourceId),
     captureScreenArea: (bounds) => ipcRenderer.invoke("capture-screen-area", bounds)
+  },
+
+  diagnostics: {
+    get: () => ipcRenderer.invoke("get-diagnostics"),
+    openLogDirectory: () => ipcRenderer.invoke("open-log-directory"),
+  },
+
+  logger: {
+    info: (message, meta = {}) => ipcRenderer.send("renderer-log", { level: "info", message, meta }),
+    warn: (message, meta = {}) => ipcRenderer.send("renderer-log", { level: "warn", message, meta }),
+    error: (message, meta = {}) => ipcRenderer.send("renderer-log", { level: "error", message, meta }),
   },
 })

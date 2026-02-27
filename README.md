@@ -1,51 +1,86 @@
 # PDF to Markdown Converter
 
-A robust PDF to Markdown converter that uses multiple OCR engines (Microsoft's TrOCR, Facebook's Nougat, and Tesseract) to achieve high-quality text extraction and markdown formatting.
+A working PDF to Markdown converter with:
+- direct text extraction using PyMuPDF
+- OCR fallback (Tesseract via `pdf2image`) for scanned pages
+- single-file and batch CLI conversion
 
-## Features ##
+## Setup
 
-- Multiple OCR engine support for better accuracy
-- Intelligent combining of results from different engines
-- Special handling for mathematical equations and technical content
-- Support for batch processing multiple PDFs
-- Proper markdown formatting
-- GPU acceleration when available
-
-## Setup ##
-
-1. Install Python dependencies:
+1. Install dependencies:
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 2. Install Tesseract OCR:
-   - Windows: Download and install from https://github.com/UB-Mannheim/tesseract/wiki
-   - Linux: `sudo apt-get install tesseract-ocr`
-   - Mac: `brew install tesseract`
+- macOS: `brew install tesseract`
+- Ubuntu/Debian: `sudo apt-get install tesseract-ocr poppler-utils`
+- Windows: install from [UB Mannheim builds](https://github.com/UB-Mannheim/tesseract/wiki)
 
-3. Make sure you have enough disk space for the ML models (approximately 5GB)
+3. For OCR conversion from PDF pages, make sure Poppler is installed (`pdftoppm` must be available).
 
-## Usage ##
+## CLI Usage
 
-### Single PDF Conversion ###
-
+### Convert one PDF
 ```bash
-python Scripts/convert_pdf.py path/to/your.pdf --output output.md
+python3 Scripts/convert_pdf.py path/to/input.pdf --output path/to/output.md
 ```
 
-### Batch Processing ###
+If `--output` is omitted, output is written next to the input PDF using the same base name.
 
+### Batch convert a folder
 ```bash
-python Scripts/convert_pdf.py path/to/pdf/folder --batch --output output/folder
+python3 Scripts/convert_pdf.py path/to/pdf-folder --batch --output path/to/output-folder
 ```
 
-### Options ###
+## Notes
 
-- `--output, -o`: Specify output file or directory
-- `--batch, -b`: Process all PDFs in the input directory
+- The converter prioritizes embedded PDF text.
+- OCR is used only when extracted text for a page is too small (likely scanned/image-only).
+- Output is page-separated using `## Page N` headers.
 
-## Known Limitations ##
+## FastAPI Model Backend (Plugin-Based)
 
-- Large PDFs may require significant memory
-- Some complex mathematical equations might need manual verification
-- Processing time depends on the PDF size and available hardware
+A Python backend is available under `backend/` with auto-discovered model routes.
+
+Run:
+```bash
+python3 -m pip install -r backend/requirements.txt
+uvicorn backend.app.main:app --reload --port 8000
+```
+
+List models:
+```bash
+curl http://127.0.0.1:8000/models
+```
+
+Convert with a specific model:
+```bash
+curl -X POST http://127.0.0.1:8000/convert/native \
+  -F "file=@/path/to/file.pdf"
+```
+
+To add a new model, add a new Python file in `backend/app/models/` exporting a `model` object (`ModelDefinition`).
+
+## Frontend/Backend Mapping
+
+The Next.js frontend now uses two API routes that proxy to the FastAPI model backend:
+
+- Frontend `fetch('/api/models')` -> Next route `GET /api/models` -> FastAPI `GET /models`
+- Frontend `fetch('/api/convert-pdf')` with `file` + `model` -> Next route `POST /api/convert-pdf` -> FastAPI `POST /convert/{model_id}`
+
+This ensures model selection in the frontend has a backend counterpart for conversion.
+
+### Required runtime
+
+Run FastAPI before using conversion from the frontend:
+
+```bash
+uvicorn backend.app.main:app --reload --port 8000
+```
+
+Set backend URL in environment:
+
+```bash
+FASTAPI_BASE_URL=http://127.0.0.1:8000
+```

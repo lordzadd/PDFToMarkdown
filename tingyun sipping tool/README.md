@@ -25,9 +25,9 @@ npm run dev:local
 
 This runs:
 - Next.js on `http://localhost:3000`
-- FastAPI model backend on `http://127.0.0.1:8000`
+- FastAPI model backend on `http://127.0.0.1:8014`
 
-If `8000` is occupied:
+If `8014` is occupied:
 ```bash
 FASTAPI_PORT=8010 FASTAPI_BASE_URL=http://127.0.0.1:8010 npm run dev:local
 ```
@@ -43,6 +43,31 @@ This starts:
 - FastAPI backend
 - existing Electron Express helper server (for legacy/electron-only flows)
 - Electron shell
+
+## Desktop logs and diagnostics
+
+- Electron now writes structured logs to:
+  - `~/Library/Application Support/Tingyun Snipping Tool/logs/desktop-app.log`
+- The app error panel includes:
+  - backend URL
+  - backend health status
+  - backend last error
+  - log file path
+- In Electron mode, use `Open Log Folder` in the error panel to jump directly to logs.
+
+## Automated maintenance / tests
+
+Run everything with one command:
+
+```bash
+npm run test:desktop:full
+```
+
+This runs:
+- backend smoke test (`npm run test:backend:smoke`)
+- Electron button audit (`npm run test:electron:buttons`)
+- production build
+- desktop package build
 
 ## Vercel deployment
 
@@ -65,3 +90,9 @@ Deploy this package as a normal Next.js app.
 
 Legacy alias:
 - `/api/convert/donut` -> FastAPI `/convert/markitdown`
+
+## Documentation
+
+- Architecture: `docs/ARCHITECTURE.md`
+- Operations runbook: `docs/OPERATIONS.md`
+- Contributor onboarding: `docs/CONTRIBUTING_GUIDE.md`

@@ -46,6 +46,7 @@ import {
   TabsTrigger as TabsTriggerComponent,
 } from "@/components/ui/tabs"
 import Image from "next/image"
+import { PDFDocument } from "pdf-lib"
 
 // Define the available models
 const PDF_MODELS = [
@@ -192,6 +193,14 @@ interface ExecutionMeta {
   note?: string | null
 }
 
+interface ElectronDiagnostics {
+  backendBaseUrl: string | null
+  backendHealthy: boolean
+  backendLastError: string | null
+  logPath: string
+  recentLogs: string[]
+}
+
 type PageLimitOption = "full" | "1" | "2" | "5" | "10" | "20"
 
 const TingyunSnippingTool = () => {
@@ -238,13 +247,17 @@ const TingyunSnippingTool = () => {
   const [isPenActive, setIsPenActive] = useState(true)
   const [penColor, setPenColor] = useState("#000000")
   const [penSize, setPenSize] = useState(2)
-  const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false)
   const [documentSegments, setDocumentSegments] = useState<any[]>([])
   const [activeSegment, setActiveSegment] = useState<number | null>(null)
   const [executionMeta, setExecutionMeta] = useState<ExecutionMeta | null>(null)
   const [isScreenSourcesDialogOpen, setIsScreenSourcesDialogOpen] = useState(false)
   const [screenSources, setScreenSources] = useState<any[]>([])
   const [selectedScreenSource, setSelectedScreenSource] = useState<string | null>(null)
+  const [screenAccessStatus, setScreenAccessStatus] = useState<string>("unknown")
+  const [conversionError, setConversionError] = useState<string | null>(null)
+  const [conversionErrorDetails, setConversionErrorDetails] = useState<string | null>(null)
+  const [lastDiagnostics, setLastDiagnostics] = useState<ElectronDiagnostics | null>(null)
+  const [isHandwritingConverting, setIsHandwritingConverting] = useState(false)
 
   // Update quality level when model changes
   useEffect(() => {
@@ -254,6 +267,39 @@ const TingyunSnippingTool = () => {
   useEffect(() => {
     setIsElectron(typeof window !== "undefined" && window.electron !== undefined)
   }, [])
+
+  useEffect(() => {
+    if (!isElectron || !window.electron?.diagnostics?.get) return
+    window.electron.diagnostics.get().then((diagnostics) => {
+      setLastDiagnostics(diagnostics)
+      window.electron?.logger?.info("Loaded startup diagnostics", {
+        backendBaseUrl: diagnostics.backendBaseUrl,
+        backendHealthy: diagnostics.backendHealthy,
+        logPath: diagnostics.logPath,
+      })
+    })
+  }, [isElectron])
+
+  const logInfo = (message: string, meta: Record<string, unknown> = {}) => {
+    if (isElectron && window.electron?.logger?.info) {
+      window.electron.logger.info(message, meta)
+    } else {
+      console.info(message, meta)
+    }
+  }
+
+  const logError = (message: string, meta: Record<string, unknown> = {}) => {
+    if (isElectron && window.electron?.logger?.error) {
+      window.electron.logger.error(message, meta)
+    } else {
+      console.error(message, meta)
+    }
+  }
+
+  const resetConversionFeedback = () => {
+    setConversionError(null)
+    setConversionErrorDetails(null)
+  }
 
   // Initialize canvas when handwriting mode is activated
   useEffect(() => {
@@ -330,10 +376,12 @@ const TingyunSnippingTool = () => {
         setPdfFile(file)
         setPdfFilePath(null) // Reset file path since this is from browser input
         setShowResult(false) // Reset the result view
+        resetConversionFeedback()
         setMarkdownResult("") // Clear any previous results
         setLatexResult("") // Clear any previous LaTeX results
         setDocumentSegments([]) // Clear any previous segments
         setActiveSegment(null) // Reset active segment
+        logInfo("Loaded PDF from browser file input", { fileName: file.name, size: file.size })
 
         // Add to history
         const newUpload: UploadHistory = {
@@ -375,10 +423,12 @@ const TingyunSnippingTool = () => {
         setPdfFile(file)
         setPdfFilePath(path)
         setShowResult(false)
+        resetConversionFeedback()
         setMarkdownResult("")
         setLatexResult("")
         setDocumentSegments([])
         setActiveSegment(null)
+        logInfo("Opened PDF in Electron", { path, name })
 
         // Add to history
         const newUpload: UploadHistory = {
@@ -393,8 +443,9 @@ const TingyunSnippingTool = () => {
         setUploadHistory((prev) => [newUpload, ...prev])
       }
     } catch (error) {
-      console.error("Error opening file:", error)
-      alert("Error opening file. Please try again.")
+      const message = error instanceof Error ? error.message : "Unknown file open error"
+      logError("Error opening file", { message })
+      alert(`Error opening file: ${message}`)
     }
   }
 
@@ -407,7 +458,10 @@ const TingyunSnippingTool = () => {
   }
 
   const handleHistoryClick = () => {
-    setIsHistoryDialogOpen(true)
+    setIsSettingsOpen(false)
+    setIsModelInfoOpen(false)
+    setIsScreenSourcesDialogOpen(false)
+    requestAnimationFrame(() => setIsHistoryOpen(true))
   }
 
   const handleHistoryItemClick = (item: UploadHistory) => {
@@ -421,23 +475,83 @@ const TingyunSnippingTool = () => {
       // For sample data without actual file content
       alert(`This would load ${item.name} (sample data)`)
     }
-    setIsHistoryDialogOpen(false)
+    setIsHistoryOpen(false)
   }
 
   const handleScreenSnip = async () => {
     if (isElectron) {
       try {
+        const permissionStatus = await window.electron.screenCapture.getPermissionStatus()
+        setScreenAccessStatus(permissionStatus)
         const sources = await window.electron.screenCapture.getSources()
         setScreenSources(sources)
         setIsScreenSourcesDialogOpen(true)
+        logInfo("Screen sources dialog opened", { permissionStatus, sourceCount: sources.length })
       } catch (error) {
-        console.error("Error getting screen sources:", error)
-        alert("Error accessing screen capture. Please try again.")
+        logError("Error getting screen sources", { error: String(error) })
+        const msg = error instanceof Error ? error.message : "Unknown error"
+        alert(`Screen capture unavailable: ${msg}. On macOS, grant Screen Recording permission to Electron.`)
       }
     } else {
       setIsScreenSnippingMode(true)
       setIsSelectionMode(false)
       alert("Screen snipping mode activated. Click and drag to select an area of the screen.")
+    }
+  }
+
+  const handleOpenScreenPermissionSettings = async () => {
+    if (!isElectron) return
+    await window.electron.screenCapture.openPermissionSettings()
+  }
+
+  const handleSystemScreenCapture = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 1 },
+        audio: false,
+      })
+      const videoTrack = mediaStream.getVideoTracks()[0]
+      if (!videoTrack) {
+        return
+      }
+
+      const video = document.createElement("video")
+      video.srcObject = mediaStream
+      await video.play()
+
+      const canvas = document.createElement("canvas")
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext("2d")
+      if (!ctx) {
+        videoTrack.stop()
+        return
+      }
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const imageData = canvas.toDataURL("image/png")
+      videoTrack.stop()
+      setIsScreenSourcesDialogOpen(false)
+
+      const response = await fetch(imageData)
+      const blob = await response.blob()
+      const file = new File([blob], "screenshot.png", { type: "image/png" })
+
+      const newUpload: UploadHistory = {
+        id: Date.now(),
+        name: "Screenshot",
+        date: new Date().toISOString().split("T")[0],
+        type: "image",
+        content: file,
+      }
+
+      setUploadHistory((prev) => [newUpload, ...prev])
+      alert("Screenshot captured successfully.")
+      logInfo("Captured screenshot via system picker", { width: canvas.width, height: canvas.height })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown display capture error"
+      logError("System screen capture failed", { message })
+      alert(`System screen capture failed: ${message}. Please allow screen sharing permissions and try again.`)
     }
   }
 
@@ -463,13 +577,15 @@ const TingyunSnippingTool = () => {
         }
 
         setUploadHistory(prev => [newUpload, ...prev])
+        logInfo("Captured screenshot from source", { sourceId })
         
         // Process the image if needed
         // You can add OCR processing here
       }
     } catch (error) {
-      console.error('Error capturing screen:', error)
-      alert('Error capturing screen. Please try again.')
+      const message = error instanceof Error ? error.message : "Unknown capture error"
+      logError("Error capturing selected screen", { sourceId, message })
+      alert(`Error capturing selected screen: ${message}`)
     }
   }
 
@@ -532,8 +648,9 @@ const TingyunSnippingTool = () => {
             // You can add OCR processing here
           }
         } catch (error) {
-          console.error('Error capturing screen area:', error)
-          alert('Error capturing screen area. Please try again.')
+          const message = error instanceof Error ? error.message : "Unknown capture area error"
+          logError("Error capturing screen area", { message, selectedArea })
+          alert(`Error capturing screen area: ${message}`)
         }
       }
       setIsScreenSnippingMode(false)
@@ -656,8 +773,8 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const handleScanHandwriting = () => {
-    // Get canvas data to analyze the drawing
+  const handleScanHandwriting = async () => {
+    resetConversionFeedback()
     const canvas = canvasRef.current
     if (!canvas) {
       alert("Canvas not available. Please try again.")
@@ -670,96 +787,59 @@ const TingyunSnippingTool = () => {
       return
     }
 
-    // Get image data to analyze
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const data = imageData.data
+    setIsHandwritingConverting(true)
+    setCurrentStep("Converting handwriting to OCR input")
+    setConversionProgress(10)
 
-    // Simple analysis to determine what was drawn
-    let pixelCount = 0
-    let leftSideActivity = 0
-    let rightSideActivity = 0
-    let topActivity = 0
-    let bottomActivity = 0
-    let centerActivity = 0
+    try {
+      const pngDataUrl = canvas.toDataURL("image/png")
+      const pngBytes = Uint8Array.from(atob(pngDataUrl.split(",")[1]), (c) => c.charCodeAt(0))
 
-    // Count non-white pixels and their distribution
-    for (let i = 0; i < data.length; i += 4) {
-      // If pixel is not white (drawing)
-      if (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250) {
-        pixelCount++
+      const pdfDoc = await PDFDocument.create()
+      const pngImage = await pdfDoc.embedPng(pngBytes)
+      const page = pdfDoc.addPage([pngImage.width, pngImage.height])
+      page.drawImage(pngImage, { x: 0, y: 0, width: pngImage.width, height: pngImage.height })
 
-        // Get pixel position
-        const pixelIndex = i / 4
-        const x = pixelIndex % canvas.width
-        const y = Math.floor(pixelIndex / canvas.width)
+      const pdfBytes = await pdfDoc.save()
+      const handwritingPdf = new File([pdfBytes], "handwriting.pdf", { type: "application/pdf" })
 
-        // Analyze position
-        if (x < canvas.width / 3) leftSideActivity++
-        if (x > (canvas.width * 2) / 3) rightSideActivity++
-        if (y < canvas.height / 3) topActivity++
-        if (y > (canvas.height * 2) / 3) bottomActivity++
-        if (
-          x > canvas.width / 3 &&
-          x < (canvas.width * 2) / 3 &&
-          y > canvas.height / 3 &&
-          y < (canvas.height * 2) / 3
-        ) {
-          centerActivity++
-        }
-      }
+      setCurrentStep("Running handwriting OCR")
+      setConversionProgress(35)
+      const markdown = await runModelConversion("ocr-only", handwritingPdf)
+      setConversionProgress(100)
+      setCurrentStep("Handwriting OCR completed")
+
+      const normalized = markdown.trim() || "*No handwriting text detected.*"
+      setIsHandwritingMode(false)
+      setMarkdownResult(normalized)
+      setLatexResult(convertMarkdownToLatex(normalized))
+      setShowResult(true)
+
+      setDocumentSegments([
+        {
+          id: 1,
+          type: "equation",
+          content: normalized,
+          confidence: 0.9,
+        },
+      ])
+      setActiveSegment(0)
+      logInfo("Handwriting OCR completed", { outputLength: normalized.length })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown handwriting conversion error"
+      const diagnostics = await fetchDiagnostics()
+      setConversionError(`Handwriting OCR failed: ${message}`)
+      setConversionErrorDetails(
+        diagnostics
+          ? `Backend URL: ${diagnostics.backendBaseUrl || "unknown"} | Healthy: ${diagnostics.backendHealthy ? "yes" : "no"} | Last backend error: ${diagnostics.backendLastError || "none"}`
+          : null,
+      )
+      setLastDiagnostics(diagnostics)
+      logError("Handwriting OCR failed", { message, diagnostics })
+      alert(`Handwriting OCR failed: ${message}`)
+    } finally {
+      setIsHandwritingConverting(false)
     }
-
-    // Determine what was likely drawn based on pixel distribution
-    let result = ""
-
-    if (pixelCount < 100) {
-      // Very little drawn
-      result = "## Simple Expression\n\n$x + y = z$\n\nA basic linear equation showing the sum of variables."
-    } else if (leftSideActivity > rightSideActivity * 2) {
-      // More activity on left side - could be an integral
-      result =
-        "## Integral Expression\n\n$\\int_{0}^{\\infty} e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}$\n\nThe Gaussian integral, a fundamental result in mathematics with applications in probability theory."
-    } else if (rightSideActivity > leftSideActivity * 2) {
-      // More activity on right side - could be a limit
-      result =
-        "## Limit Expression\n\n$\\lim_{x \\to 0} \\frac{\\sin x}{x} = 1$\n\nA famous limit that appears in calculus and is essential for defining the derivative of sine."
-    } else if (topActivity > bottomActivity * 1.5) {
-      // More activity on top - could be a fraction or division
-      result =
-        "## Fraction Expression\n\n$\\frac{d}{dx}\\left(\\frac{f(x)}{g(x)}\\right) = \\frac{g(x)f'(x) - f(x)g'(x)}{[g(x)]^2}$\n\nThe quotient rule for derivatives, used to find the derivative of a fraction."
-    } else if (bottomActivity > topActivity * 1.5) {
-      // More activity on bottom - could be a summation
-      result =
-        "## Summation Expression\n\n$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$\n\nThe formula for the sum of the first n natural numbers, a classic result in mathematics."
-    } else if (centerActivity > pixelCount / 3) {
-      // Concentrated in center - could be a complex equation
-      result =
-        "## Matrix Expression\n\n$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}^{-1} = \\frac{1}{ad-bc} \\begin{pmatrix} d & -b \\\\ -c & a \\end{pmatrix}$\n\nThe formula for the inverse of a 2×2 matrix, useful in linear algebra and transformations."
-    } else {
-      // Balanced activity - could be a general equation
-      result =
-        "## Differential Equation\n\n$\\frac{d^2y}{dx^2} + \\omega^2y = 0$\n\nThe simple harmonic oscillator equation, fundamental in physics and engineering."
-    }
-
-    // Display the result
-    setIsHandwritingMode(false)
-    setMarkdownResult(result)
-    setLatexResult(convertMarkdownToLatex(result))
-    setShowResult(true)
-
-    // Create a single segment for handwriting
-    setDocumentSegments([
-      {
-        id: 1,
-        type: "equation",
-        content: result,
-        confidence: 0.92,
-      },
-    ])
-    setActiveSegment(0)
-
-    // Simulate processing
-    alert("Handwriting analyzed and converted to LaTeX/Markdown!")
   }
 
   const buildCommonOptions = () => {
@@ -773,245 +853,95 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const processWithPaddleOCR = async (file: File) => {
-    const commonOptions = buildCommonOptions()
-
-    const steps = MODEL_SETTINGS.paddleocr.processingSteps
-    const totalSteps = steps.length
-
-    for (let i = 0; i < totalSteps; i++) {
-      setCurrentStep(steps[i])
-      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
-      await new Promise((resolve) => setTimeout(resolve, 800))
+  const parseErrorText = async (response: Response): Promise<string> => {
+    let payload: Record<string, unknown> | null = null
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
     }
 
+    const primary =
+      typeof payload?.error === "string"
+        ? payload.error
+        : typeof payload?.detail === "string"
+          ? payload.detail
+          : `Request failed with status ${response.status}`
+    const requestId = typeof payload?.requestId === "string" ? payload.requestId : null
+    return `${primary}${requestId ? ` [requestId: ${requestId}]` : ""} (HTTP ${response.status})`
+  }
+
+  const fetchDiagnostics = async (): Promise<ElectronDiagnostics | null> => {
+    if (!isElectron || !window.electron?.diagnostics?.get) {
+      return null
+    }
     try {
-      const formData = new FormData()
-      formData.append('pdf', file)
-      formData.append('options', JSON.stringify(commonOptions))
-
-      const response = await fetch('/api/convert/paddleocr', {
-        method: 'POST',
-        body: formData
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to process PDF')
-      }
-
-      const data = await response.json()
-      setDocumentSegments(data.segments)
-      setActiveSegment(0)
-      setExecutionMeta(data.execution ?? null)
-      console.info("Model execution", data.execution)
-
-      return data.markdown
-    } catch (error) {
-      console.error('Error processing PDF:', error)
-      throw error
+      return await window.electron.diagnostics.get()
+    } catch {
+      return null
     }
   }
 
-  const processWithDoctrEu = async (file: File) => {
+  const runModelConversion = async (modelId: string, file: File) => {
     const commonOptions = buildCommonOptions()
+    const model = PDF_MODELS.find((m) => m.id === modelId)
+    const endpoint = `/api/convert/${encodeURIComponent(modelId)}`
 
-    const steps = MODEL_SETTINGS["doctr-eu"].processingSteps
-    const totalSteps = steps.length
+    setCurrentStep(`Preparing ${model?.name || modelId} request`)
+    setConversionProgress(8)
+    await new Promise((resolve) => setTimeout(resolve, 120))
 
-    for (let i = 0; i < totalSteps; i++) {
-      setCurrentStep(steps[i])
-      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-    }
+    const formData = new FormData()
+    formData.append("pdf", file, file.name)
+    formData.append("options", JSON.stringify(commonOptions))
+
+    setCurrentStep("Uploading PDF to backend")
+    setConversionProgress(18)
+    const requestStartedAt = Date.now()
+    let ticker: ReturnType<typeof setInterval> | null = null
 
     try {
-      const formData = new FormData()
-      // Ensure file field name matches multer's expected field name
-      formData.append('pdf', file, file.name)
-      formData.append('options', JSON.stringify(commonOptions))
+      ticker = setInterval(() => {
+        setConversionProgress((prev) => Math.min(prev + 2, 88))
+        const elapsed = Math.floor((Date.now() - requestStartedAt) / 1000)
+        setCurrentStep(`Running OCR on backend (${elapsed}s elapsed)`)
+      }, 900)
 
-      const response = await fetch('/api/convert/doctr-eu', {
-        method: 'POST',
-        body: formData
+      const response = await fetch(endpoint, {
+        method: "POST",
+        body: formData,
       })
 
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to process with docTR')
+        const details = await parseErrorText(response)
+        throw new Error(details)
       }
 
       const data = await response.json()
-      setDocumentSegments(data.segments)
-      setActiveSegment(0)
+      setCurrentStep("Post-processing OCR output")
+      setConversionProgress(95)
+
+      setDocumentSegments(Array.isArray(data.segments) ? data.segments : [])
+      setActiveSegment(Array.isArray(data.segments) && data.segments.length > 0 ? 0 : null)
       setExecutionMeta(data.execution ?? null)
-      console.info("Model execution", data.execution)
 
-      return data.markdown
-    } catch (error) {
-      console.error('Error processing with docTR:', error)
-      throw error
-    }
-  }
-
-  const processWithLayoutLM = async (file: File) => {
-    const commonOptions = buildCommonOptions()
-
-    const steps = MODEL_SETTINGS.layoutlm.processingSteps
-    const totalSteps = steps.length
-
-    for (let i = 0; i < totalSteps; i++) {
-      setCurrentStep(steps[i])
-      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
-      await new Promise((resolve) => setTimeout(resolve, 600))
-    }
-
-    try {
-      const formData = new FormData()
-      formData.append('pdf', file)
-      formData.append('options', JSON.stringify(commonOptions))
-
-      const response = await fetch('/api/convert/layoutlm', {
-        method: 'POST',
-        body: formData
+      logInfo("Conversion completed", {
+        modelId,
+        execution: data.execution,
       })
 
-      if (!response.ok) {
-        throw new Error('Failed to process with LayoutLM')
+      return typeof data.markdown === "string" ? data.markdown : ""
+    } finally {
+      if (ticker) {
+        clearInterval(ticker)
       }
-
-      const data = await response.json()
-      setDocumentSegments(data.segments)
-      setActiveSegment(0)
-      setExecutionMeta(data.execution ?? null)
-      console.info("Model execution", data.execution)
-
-      return data.markdown
-    } catch (error) {
-      console.error('Error processing with LayoutLM:', error)
-      throw error
-    }
-  }
-
-  const processWithMarkItDown = async (file: File) => {
-    const commonOptions = buildCommonOptions()
-
-    const steps = MODEL_SETTINGS.markitdown.processingSteps
-    const totalSteps = steps.length
-
-    for (let i = 0; i < totalSteps; i++) {
-      setCurrentStep(steps[i])
-      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
-      await new Promise((resolve) => setTimeout(resolve, 400))
-    }
-
-    try {
-      const formData = new FormData()
-      formData.append('pdf', file)
-      formData.append('options', JSON.stringify(commonOptions))
-
-      const response = await fetch('/api/convert/markitdown', {
-        method: 'POST',
-        body: formData
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to process with MarkItDown')
-      }
-
-      const data = await response.json()
-      setDocumentSegments(data.segments)
-      setActiveSegment(0)
-      setExecutionMeta(data.execution ?? null)
-      console.info("Model execution", data.execution)
-
-      return data.markdown
-    } catch (error) {
-      console.error('Error processing with MarkItDown:', error)
-      throw error
-    }
-  }
-
-  const processWithZeroX = async (file: File) => {
-    const commonOptions = buildCommonOptions()
-
-    const steps = MODEL_SETTINGS.zerox.processingSteps
-    const totalSteps = steps.length
-
-    for (let i = 0; i < totalSteps; i++) {
-      setCurrentStep(steps[i])
-      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
-      await new Promise((resolve) => setTimeout(resolve, 850))
-    }
-
-    try {
-      const formData = new FormData()
-      formData.append('pdf', file)
-      formData.append('options', JSON.stringify(commonOptions))
-
-      const response = await fetch('/api/convert/zerox', {
-        method: 'POST',
-        body: formData
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to process with ZeroX')
-      }
-
-      const data = await response.json()
-      setDocumentSegments(data.segments)
-      setActiveSegment(0)
-      setExecutionMeta(data.execution ?? null)
-      console.info("Model execution", data.execution)
-
-      return data.markdown
-    } catch (error) {
-      console.error('Error processing with ZeroX:', error)
-      throw error
-    }
-  }
-
-  const processWithDocling = async (file: File) => {
-    const commonOptions = buildCommonOptions()
-
-    const steps = MODEL_SETTINGS.docling.processingSteps
-    const totalSteps = steps.length
-
-    for (let i = 0; i < totalSteps; i++) {
-      setCurrentStep(steps[i])
-      setConversionProgress(Math.floor(((i + 0.5) / totalSteps) * 100))
-      await new Promise((resolve) => setTimeout(resolve, 700))
-    }
-
-    try {
-      const formData = new FormData()
-      formData.append('pdf', file)
-      formData.append('options', JSON.stringify(commonOptions))
-
-      const response = await fetch('/api/convert/docling', {
-        method: 'POST',
-        body: formData
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to process with Docling')
-      }
-
-      const data = await response.json()
-      setDocumentSegments(data.segments)
-      setActiveSegment(0)
-      setExecutionMeta(data.execution ?? null)
-      console.info("Model execution", data.execution)
-
-      return data.markdown
-    } catch (error) {
-      console.error('Error processing with Docling:', error)
-      throw error
     }
   }
 
   const handleConvertPdf = async () => {
     if (!pdfFile) return
 
+    resetConversionFeedback()
     setIsConverting(true)
     setConversionProgress(0)
     setShowResult(false)
@@ -1019,36 +949,12 @@ const TingyunSnippingTool = () => {
     setExecutionMeta(null)
 
     try {
-      let result = ""
-
-      // Process with selected model
-      switch (selectedModel) {
-        case "paddleocr":
-          result = await processWithPaddleOCR(pdfFile)
-          break
-        case "doctr-eu":
-          result = await processWithDoctrEu(pdfFile)
-          break
-        case "layoutlm":
-          result = await processWithLayoutLM(pdfFile)
-          break
-        case "markitdown":
-          result = await processWithMarkItDown(pdfFile)
-          break
-        case "docling":
-          result = await processWithDocling(pdfFile)
-          break
-        case "zerox":
-          result = await processWithZeroX(pdfFile)
-          break
-        default:
-          result = await processWithPaddleOCR(pdfFile)
-      }
+      let result = await runModelConversion(selectedModel, pdfFile)
 
       // Apply quality settings
       if (qualityLevel < 50) {
         // Simulate lower quality by introducing errors
-        result = result.replace(/\b(\w{7,})\b/g, (match) => {
+        result = result.replace(/\b(\w{7,})\b/g, (match: string) => {
           const shouldReplace = Math.random() < 0.3
           return shouldReplace ? match.slice(0, -1) + "?" : match
         })
@@ -1067,12 +973,28 @@ const TingyunSnippingTool = () => {
 
       setMarkdownResult(result)
       setLatexResult(convertMarkdownToLatex(result))
+      setCurrentStep("Completed")
+      setConversionProgress(100)
       setIsConverting(false)
       setShowResult(true)
     } catch (error) {
-      console.error("Conversion error:", error)
+      const diagnostics = await fetchDiagnostics()
+      const message = error instanceof Error ? error.message : "Unknown conversion error"
+      setConversionError(message)
+      setConversionErrorDetails(
+        diagnostics
+          ? `Backend URL: ${diagnostics.backendBaseUrl || "unknown"} | Healthy: ${diagnostics.backendHealthy ? "yes" : "no"} | Last backend error: ${diagnostics.backendLastError || "none"}`
+          : null,
+      )
+      setLastDiagnostics(diagnostics)
+      logError("Conversion failed", {
+        message,
+        diagnostics,
+        model: selectedModel,
+      })
       setIsConverting(false)
-      alert("Error converting PDF. Please try again.")
+      setCurrentStep("Failed")
+      setConversionProgress(0)
     }
   }
 
@@ -1216,6 +1138,7 @@ const TingyunSnippingTool = () => {
   const handleClearContent = () => {
     setPdfFile(null)
     setPdfFilePath(null)
+    resetConversionFeedback()
     setMarkdownResult("")
     setLatexResult("")
     setShowResult(false)
@@ -1279,7 +1202,7 @@ const TingyunSnippingTool = () => {
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 relative">
             <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/1799-tingyunheart-1s7w1lpwtlHdAXiA4WdE24MRISKfBG.png"
+              src="/tingyun-logo.png"
               alt="Tingyun Logo"
               width={28}
               height={28}
@@ -1372,7 +1295,16 @@ const TingyunSnippingTool = () => {
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleHistoryClick}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onMouseDown={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    handleHistoryClick()
+                  }}
+                >
                   <History size={18} />
                 </Button>
               </TooltipTrigger>
@@ -1491,6 +1423,86 @@ const TingyunSnippingTool = () => {
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
         >
+          {isHandwritingMode && (
+            <div className="h-full flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={handleBackClick} className="flex items-center gap-1">
+                    <ChevronLeft size={14} />
+                    Back
+                  </Button>
+                  <span className="text-sm text-gray-600">Handwriting Workspace</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={togglePenTool}>
+                    <PenTool size={14} />
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleUndo} disabled={historyIndex <= 0}>
+                    <Undo size={14} />
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleRedo} disabled={historyIndex >= canvasHistory.length - 1}>
+                    <Redo size={14} />
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={toggleGrid}>
+                    <Grid size={14} />
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleClearCanvas}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 text-xs text-gray-600">
+                <span>Pen Size</span>
+                <Slider
+                  value={[penSize]}
+                  min={1}
+                  max={12}
+                  step={1}
+                  onValueChange={(value) => setPenSize(value[0])}
+                  className="w-40"
+                />
+                <span>Color</span>
+                <input
+                  type="color"
+                  value={penColor}
+                  onChange={(e) => setPenColor(e.target.value)}
+                  className="h-7 w-10 p-0 border border-gray-300 rounded"
+                />
+              </div>
+
+              <div className="flex-1 border border-gray-200 rounded-md bg-white flex items-center justify-center">
+                <canvas
+                  ref={canvasRef}
+                  width={900}
+                  height={480}
+                  className="max-w-full max-h-full cursor-crosshair border border-gray-100"
+                  onMouseDown={handleCanvasMouseDown}
+                  onMouseMove={handleCanvasMouseMove}
+                  onMouseUp={handleCanvasMouseUp}
+                  onMouseLeave={handleCanvasMouseUp}
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  onClick={handleScanHandwriting}
+                  disabled={isHandwritingConverting}
+                  className="bg-purple-500 hover:bg-purple-600 text-white"
+                >
+                  {isHandwritingConverting ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 size={14} className="animate-spin" />
+                      Converting...
+                    </span>
+                  ) : (
+                    "Scan Handwriting"
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Selection overlay */}
           {(isScreenSnippingMode || isSelectionMode) && isDrawing && (
             <div
@@ -1504,13 +1516,32 @@ const TingyunSnippingTool = () => {
             />
           )}
 
-          {pdfFile && !showResult && (
+          {!isHandwritingMode && pdfFile && !showResult && (
             <div className="flex flex-col items-center justify-center h-full gap-4">
               <div className="flex items-center gap-2 text-purple-600">
                 <FileText size={24} />
                 <span className="font-medium">{pdfFile.name}</span>
                 {pdfFilePath && <span className="text-xs text-gray-500">({pdfFilePath})</span>}
               </div>
+
+              {conversionError && (
+                <Alert className="max-w-2xl bg-red-50 border-red-200 text-red-900">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    <p className="font-medium">Conversion failed</p>
+                    <p className="text-xs mt-1">{conversionError}</p>
+                    {conversionErrorDetails && <p className="text-xs mt-1">{conversionErrorDetails}</p>}
+                    {lastDiagnostics?.logPath && <p className="text-xs mt-1">Log file: {lastDiagnostics.logPath}</p>}
+                    {isElectron && (
+                      <div className="mt-2">
+                        <Button variant="outline" size="sm" onClick={() => window.electron.diagnostics.openLogDirectory()}>
+                          Open Log Folder
+                        </Button>
+                      </div>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
 
               {isConverting ? (
                 <div className="w-full max-w-lg">
@@ -1546,7 +1577,7 @@ const TingyunSnippingTool = () => {
             </div>
           )}
 
-          {showResult && (
+          {!isHandwritingMode && showResult && (
             <div className="flex flex-col h-full">
               <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-2">
@@ -1608,7 +1639,7 @@ const TingyunSnippingTool = () => {
             </div>
           )}
 
-          {!pdfFile && !showResult && (
+          {!isHandwritingMode && !pdfFile && !showResult && (
             <div className="flex flex-col items-center justify-center h-full gap-4">
               <div className="p-6 border-2 border-dashed rounded-lg border-gray-300 flex flex-col items-center gap-2 max-w-lg mx-auto">
                 <Upload size={32} className="text-gray-400" />
@@ -1640,7 +1671,7 @@ const TingyunSnippingTool = () => {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Image
-                src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/1799-tingyunheart-1s7w1lpwtlHdAXiA4WdE24MRISKfBG.png"
+                src="/tingyun-logo.png"
                 alt="Tingyun Logo"
                 width={24}
                 height={24}
@@ -1879,7 +1910,41 @@ const TingyunSnippingTool = () => {
       </Dialog>
 
       {/* History Dialog */}
-      <Dialog open={isHistoryDialogOpen} onOpenChange={setIsHistoryDialogOpen}>
+      <Dialog open={isModelInfoOpen} onOpenChange={setIsModelInfoOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Layers size={18} />
+              Model Information
+            </DialogTitle>
+            <DialogDescription>Current OCR model adapters and their strengths</DialogDescription>
+          </DialogHeader>
+
+          <div className="py-2 space-y-3 max-h-[420px] overflow-y-auto">
+            {PDF_MODELS.map((model) => (
+              <div key={model.id} className="rounded border border-gray-200 p-3">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-sm">{model.name}</p>
+                  <span className="text-xs px-2 py-0.5 bg-gray-100 rounded-full text-gray-600">
+                    {model.processingTime}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">{model.description}</p>
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {model.strengths.map((strength) => (
+                    <span key={`${model.id}-${strength}`} className="text-xs px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full">
+                      {strength}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* History Dialog */}
+      <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1956,7 +2021,25 @@ const TingyunSnippingTool = () => {
                 ))}
               </div>
             ) : (
-              <p className="text-center text-gray-500 py-4">No screen sources available</p>
+              <div className="space-y-3">
+                <p className="text-center text-gray-500 py-2">No screen sources available</p>
+                <p className="text-xs text-gray-500 text-center">
+                  Screen Recording access status: <span className="font-medium">{screenAccessStatus}</span>
+                </p>
+                {isElectron && (
+                  <div className="flex items-center justify-center gap-2">
+                    <Button variant="default" size="sm" onClick={handleSystemScreenCapture}>
+                      Use System Screen Picker
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={handleOpenScreenPermissionSettings}>
+                      Open Screen Recording Settings
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={handleScreenSnip}>
+                      Retry
+                    </Button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </DialogContent>

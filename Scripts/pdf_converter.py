@@ -1,168 +1,162 @@
-import os
-import torch
-from transformers import (
-    TrOCRProcessor, 
-    VisionEncoderDecoderModel, 
-    NougatProcessor
-)
-from pdf2image import convert_from_path
-import pytesseract
-from PIL import Image
 import logging
+import os
 import re
-from layout_models import LayoutModels
+import tempfile
+from dataclasses import dataclass
+from typing import List, Optional
+
+import fitz  # PyMuPDF
+
+try:
+    from pdf2image import convert_from_path
+except Exception:  # pragma: no cover
+    convert_from_path = None
+
+try:
+    import pytesseract
+except Exception:  # pragma: no cover
+    pytesseract = None
+
+
+@dataclass
+class PageConversionResult:
+    page_number: int
+    markdown: str
+
 
 class PDFConverter:
-    def __init__(self):
-        # Set up logging
+    def __init__(self) -> None:
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
+            format="%(asctime)s - %(levelname)s - %(message)s",
         )
         self.logger = logging.getLogger(__name__)
-        
-        # Initialize OCR models
-        self.init_models()
 
-    def init_models(self):
-        """Initialize all OCR models"""
-        try:
-            # TrOCR initialization
-            self.trocr_processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-printed")
-            self.trocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-printed")
-            
-            # Nougat initialization
-            self.nougat_processor = NougatProcessor.from_pretrained("facebook/nougat-base")
-            self.nougat_model = VisionEncoderDecoderModel.from_pretrained("facebook/nougat-base")
-            
-            # Layout Models initialization
-            self.layout_models = LayoutModels()
-            
-            # Move models to GPU if available
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.trocr_model.to(self.device)
-            self.nougat_model.to(self.device)
-            
-            self.logger.info("All models loaded successfully")
-        except Exception as e:
-            self.logger.error(f"Error initializing models: {str(e)}")
-            raise
+    def process_pdf(self, pdf_path: str, output_path: Optional[str] = None) -> str:
+        markdown = self.convert_to_markdown(pdf_path)
 
-    def convert_pdf_to_images(self, pdf_path, dpi=300):
-        """Convert PDF to images"""
-        try:
-            self.logger.info(f"Converting PDF to images: {pdf_path}")
-            return convert_from_path(pdf_path, dpi=dpi)
-        except Exception as e:
-            self.logger.error(f"Error converting PDF to images: {str(e)}")
-            raise
+        if output_path:
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as md_file:
+                md_file.write(markdown)
+            self.logger.info("Saved markdown to %s", output_path)
 
-    def process_with_trocr(self, image):
-        """Process image with TrOCR"""
-        try:
-            pixel_values = self.trocr_processor(images=image, return_tensors="pt").pixel_values.to(self.device)
-            with torch.no_grad():
-                generated_ids = self.trocr_model.generate(pixel_values)
-            return self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        except Exception as e:
-            self.logger.error(f"Error in TrOCR processing: {str(e)}")
+        return markdown
+
+    def convert_to_markdown(self, pdf_path: str) -> str:
+        if not os.path.isfile(pdf_path):
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+        self.logger.info("Processing PDF: %s", pdf_path)
+        pages: List[PageConversionResult] = []
+
+        with fitz.open(pdf_path) as doc:
+            for index, page in enumerate(doc, start=1):
+                page_markdown = self._extract_page_markdown(page)
+
+                # OCR fallback for scanned/image-heavy pages.
+                if len(page_markdown.strip()) < 30:
+                    ocr_text = self._ocr_page(pdf_path, index)
+                    if ocr_text:
+                        page_markdown = self._format_text_to_markdown(ocr_text)
+
+                pages.append(PageConversionResult(page_number=index, markdown=page_markdown.strip()))
+
+        rendered_pages = [
+            f"## Page {page.page_number}\n\n{page.markdown or '*No text detected on this page.*'}"
+            for page in pages
+        ]
+        return "\n\n".join(rendered_pages).strip() + "\n"
+
+    def _extract_page_markdown(self, page: fitz.Page) -> str:
+        text_dict = page.get_text("dict")
+        blocks = text_dict.get("blocks", [])
+
+        text_blocks = []
+        for block in blocks:
+            if block.get("type") != 0:
+                continue
+
+            block_lines = []
+            for line in block.get("lines", []):
+                spans = line.get("spans", [])
+                line_text = "".join(span.get("text", "") for span in spans).strip()
+                if line_text:
+                    block_lines.append(line_text)
+
+            if block_lines:
+                y0 = float(block.get("bbox", [0, 0, 0, 0])[1])
+                x0 = float(block.get("bbox", [0, 0, 0, 0])[0])
+                text_blocks.append((y0, x0, "\n".join(block_lines)))
+
+        text_blocks.sort(key=lambda item: (item[0], item[1]))
+        merged_text = "\n\n".join(block_text for _, _, block_text in text_blocks)
+        return self._format_text_to_markdown(merged_text)
+
+    def _ocr_page(self, pdf_path: str, page_number: int) -> str:
+        if convert_from_path is None or pytesseract is None:
             return ""
 
-    def process_with_nougat(self, image):
-        """Process image with Nougat"""
+        self.logger.info("Falling back to OCR for page %s", page_number)
         try:
-            pixel_values = self.nougat_processor(images=image, return_tensors="pt").pixel_values.to(self.device)
-            outputs = self.nougat_model.generate(pixel_values)
-            return self.nougat_processor.batch_decode(outputs, skip_special_tokens=True)[0]
-        except Exception as e:
-            self.logger.error(f"Error in Nougat processing: {str(e)}")
+            with tempfile.TemporaryDirectory(prefix="pdf_ocr_") as temp_dir:
+                images = convert_from_path(
+                    pdf_path,
+                    dpi=250,
+                    first_page=page_number,
+                    last_page=page_number,
+                    output_folder=temp_dir,
+                    fmt="png",
+                )
+                if not images:
+                    return ""
+
+                return pytesseract.image_to_string(images[0]).strip()
+        except Exception as exc:
+            self.logger.warning("OCR fallback unavailable for page %s: %s", page_number, str(exc))
             return ""
 
-    def process_with_tesseract(self, image):
-        """Process image with Tesseract"""
-        try:
-            return pytesseract.image_to_string(image)
-        except Exception as e:
-            self.logger.error(f"Error in Tesseract processing: {str(e)}")
-            return ""
+    def _format_text_to_markdown(self, text: str) -> str:
+        lines = [line.rstrip() for line in text.splitlines()]
+        normalized: List[str] = []
 
-    def convert_latex_to_markdown(self, text):
-        """Convert LaTeX content to Markdown format"""
-        # Convert document class and packages to markdown metadata
-        text = re.sub(r'\\documentclass.*?\n', '---\n', text)
-        text = re.sub(r'\\usepackage.*?\n', '', text)
-        text = re.sub(r'\\begin{document}', '---\n\n', text)
-        text = re.sub(r'\\end{document}', '', text)
-        
-        # Convert sections and subsections
-        text = re.sub(r'\\section{(.*?)}', r'# \1', text)
-        text = re.sub(r'\\subsection{(.*?)}', r'## \1', text)
-        text = re.sub(r'\\subsubsection{(.*?)}', r'### \1', text)
-        
-        # Convert basic math environments
-        text = re.sub(r'\\begin{equation\*?}(.*?)\\end{equation\*?}', r'$$\1$$', text, flags=re.DOTALL)
-        text = re.sub(r'\\begin{align\*?}(.*?)\\end{align\*?}', r'$$\1$$', text, flags=re.DOTALL)
-        text = re.sub(r'\$\$(.*?)\$\$', lambda m: m.group(0).replace('\\\\', '\\'), text, flags=re.DOTALL)
-        
-        # Convert inline math
-        text = re.sub(r'\$(.*?)\$', lambda m: m.group(0).replace('\\\\', '\\'), text)
-        
-        # Clean up extra newlines and spaces
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        
-        return text.strip()
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                normalized.append("")
+                continue
 
-    def combine_results(self, trocr_text, tesseract_text, layout_results):
-        """Intelligently combine results from different models"""
-        # Use layout information to structure the text
-        layout_info = layout_results['layout_info']
-        structured_text = layout_results['text']
-        
-        # Combine text based on confidence and layout understanding
-        if layout_info['attention'] is not None:
-            # Use attention weights to determine which parts of the text to keep
-            attention_weights = layout_info['attention'].mean(dim=(0, 1))
-            high_attention_mask = attention_weights > attention_weights.mean()
-            
-            # Prefer structured text from Donut for high-attention regions
-            final_text = structured_text
-            
-            # Fill in with TrOCR/Tesseract results for other regions
-            if not high_attention_mask.all():
-                final_text = f"{final_text}\n{trocr_text}"
-        else:
-            # If no layout attention, use a simple combination
-            final_text = f"{structured_text}\n{trocr_text}"
-        
-        # Convert any LaTeX content to Markdown
-        final_text = self.convert_latex_to_markdown(final_text)
-            
-        return final_text
+            if self._looks_like_heading(stripped):
+                heading = stripped.rstrip(":")
+                normalized.append(f"### {heading}")
+                continue
 
-    def convert_to_markdown(self, pdf_path):
-        """Convert PDF to markdown using all available models"""
-        try:
-            self.logger.info(f"Processing PDF: {pdf_path}")
-            images = self.convert_pdf_to_images(pdf_path)
-            
-            full_text = []
-            for i, image in enumerate(images):
-                self.logger.info(f"Processing page {i+1}/{len(images)}")
-                
-                # Process with each model
-                trocr_text = self.process_with_trocr(image)
-                tesseract_text = self.process_with_tesseract(image)
-                layout_results = self.layout_models.extract_structured_text(image)
-                
-                # Combine results
-                page_text = self.combine_results(trocr_text, tesseract_text, layout_results)
-                
-                # Add page marker
-                full_text.append(f"## Page {i+1}\n\n{page_text}\n")
-            
-            # Join all pages
-            return "\n".join(full_text)
-            
-        except Exception as e:
-            self.logger.error(f"Error processing PDF: {str(e)}")
-            raise
+            if re.match(r"^(?:[-*•]|\d+[.)])\s+", stripped):
+                normalized.append(stripped)
+                continue
+
+            normalized.append(stripped)
+
+        # Collapse excessive empty lines.
+        markdown = "\n".join(normalized)
+        markdown = re.sub(r"\n{3,}", "\n\n", markdown)
+        return markdown.strip()
+
+    def _looks_like_heading(self, line: str) -> bool:
+        words = line.split()
+        if len(words) == 0 or len(words) > 12:
+            return False
+
+        if line.isupper() and len(line) > 3:
+            return True
+
+        title_case_ratio = sum(1 for w in words if w[:1].isupper()) / max(1, len(words))
+        if title_case_ratio >= 0.7 and not line.endswith("."):
+            return True
+
+        if re.match(r"^(Chapter|Section|Part)\s+\d+", line, flags=re.IGNORECASE):
+            return True
+
+        return False

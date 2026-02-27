@@ -1,12 +1,203 @@
-const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen } = require("electron")
+const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen, shell, systemPreferences, session } = require("electron")
 const path = require("path")
 const fs = require("fs")
+const http = require("http")
+const { spawn } = require("child_process")
 const isDev = !app.isPackaged
 
 // Keep a global reference of the window object to prevent garbage collection
 let mainWindow
+let embeddedNextServer = null
+let embeddedNextUrl = null
+let backendProcess = null
+let backendBaseUrl = null
+let backendLastError = null
 
-function createWindow() {
+function ensureLogDir() {
+  const logDir = path.join(app.getPath("userData"), "logs")
+  fs.mkdirSync(logDir, { recursive: true })
+  return logDir
+}
+
+function getLogPath() {
+  return path.join(ensureLogDir(), "desktop-app.log")
+}
+
+function writeLog(level, message, meta = {}) {
+  try {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      level,
+      message,
+      meta,
+    })
+    fs.appendFileSync(getLogPath(), `${line}\n`, "utf8")
+  } catch (error) {
+    console.error("Failed to write log:", error)
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function isBackendHealthy(baseUrl) {
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 1500)
+    const response = await fetch(`${baseUrl}/health`, { method: "GET", signal: controller.signal })
+    clearTimeout(timer)
+    return response.ok
+  } catch (_) {
+    return false
+  }
+}
+
+function resolveBackendRoot() {
+  if (isDev) {
+    // Repository layout: <root>/tingyun sipping tool/electron/main.js and <root>/backend.
+    const devBackend = path.resolve(__dirname, "../../backend")
+    return fs.existsSync(devBackend) ? devBackend : null
+  }
+  const packagedBackend = path.join(process.resourcesPath, "backend")
+  return fs.existsSync(packagedBackend) ? packagedBackend : null
+}
+
+async function ensureBackendServer() {
+  const port = Number(process.env.FASTAPI_PORT || 8014)
+  const baseUrl = `http://127.0.0.1:${port}`
+  backendBaseUrl = baseUrl
+  backendLastError = null
+
+  if (await isBackendHealthy(baseUrl)) {
+    writeLog("info", "Backend already healthy", { baseUrl })
+    return baseUrl
+  }
+
+  const backendRoot = resolveBackendRoot()
+  if (!backendRoot) {
+    const msg = "Backend directory not found. OCR model routes will be unavailable."
+    backendLastError = msg
+    writeLog("error", msg, { isDev, resourcesPath: process.resourcesPath })
+    console.warn(msg)
+    return null
+  }
+  writeLog("info", "Attempting backend startup", { backendRoot, baseUrl, isDev })
+
+  const pythonCandidates = [
+    { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
+    process.env.PYTHON_PATH ? { cmd: process.env.PYTHON_PATH, prefixArgs: [] } : null,
+    { cmd: "/usr/bin/python3", prefixArgs: [] },
+    { cmd: "python3", prefixArgs: [] },
+  ].filter(Boolean)
+
+  for (const candidate of pythonCandidates) {
+    try {
+      const backendArgs = [
+        ...(candidate.prefixArgs || []),
+        "-m",
+        "uvicorn",
+        "backend.app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        String(port),
+        "--app-dir",
+        path.dirname(backendRoot),
+      ]
+      backendProcess = spawn(
+        candidate.cmd,
+        backendArgs,
+        {
+          cwd: backendRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            PYTHONWARNINGS: process.env.PYTHONWARNINGS || "ignore:urllib3 v2 only supports OpenSSL 1.1.1+",
+            PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True",
+            PATH: `/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
+          },
+        },
+      )
+
+      backendProcess.stdout.on("data", (chunk) => process.stdout.write(`[backend] ${chunk}`))
+      backendProcess.stderr.on("data", (chunk) => {
+        const line = chunk.toString()
+        backendLastError = line.trim().slice(0, 500)
+        process.stderr.write(`[backend] ${chunk}`)
+      })
+      backendProcess.on("exit", (code) => {
+        writeLog("warn", "Backend process exited", { code, cmd: candidate.cmd })
+      })
+
+      const deadline = Date.now() + 30000
+      while (Date.now() < deadline) {
+        if (await isBackendHealthy(baseUrl)) {
+          writeLog("info", "Backend started successfully", { baseUrl, cmd: candidate.cmd })
+          return baseUrl
+        }
+        await sleep(500)
+      }
+
+      backendLastError = backendLastError || `Timed out waiting for backend at ${baseUrl}`
+      writeLog("error", "Backend startup timed out for candidate", { cmd: candidate.cmd, baseUrl })
+      backendProcess.kill("SIGTERM")
+      backendProcess = null
+    } catch (error) {
+      backendLastError = error instanceof Error ? error.message : String(error)
+      writeLog("error", "Failed to launch backend candidate", {
+        cmd: candidate.cmd,
+        error: backendLastError,
+      })
+      console.error(`Failed to launch backend with ${candidate.cmd}:`, error)
+      if (backendProcess) {
+        backendProcess.kill("SIGTERM")
+        backendProcess = null
+      }
+    }
+  }
+
+  const msg = "Unable to start backend automatically. OCR model routes will fail until backend is running."
+  writeLog("error", msg, { baseUrl, backendLastError })
+  console.warn(msg)
+  return null
+}
+
+async function ensureEmbeddedNextServer() {
+  if (embeddedNextUrl) {
+    return embeddedNextUrl
+  }
+
+  const next = require("next")
+  const appDir = path.join(__dirname, "..")
+  const nextApp = next({ dev: false, dir: appDir })
+  const handle = nextApp.getRequestHandler()
+
+  await nextApp.prepare()
+
+  embeddedNextServer = http.createServer((req, res) => handle(req, res))
+
+  await new Promise((resolve, reject) => {
+    embeddedNextServer.once("error", reject)
+    embeddedNextServer.listen(0, "127.0.0.1", resolve)
+  })
+
+  const address = embeddedNextServer.address()
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to determine embedded Next.js server port")
+  }
+
+  embeddedNextUrl = `http://127.0.0.1:${address.port}`
+  return embeddedNextUrl
+}
+
+async function createWindow() {
+  const backendUrl = await ensureBackendServer()
+  if (backendUrl) {
+    process.env.FASTAPI_BASE_URL = backendUrl
+  }
+  writeLog("info", "Creating application window", { backendUrl })
+
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
 
   // Create the browser window
@@ -22,11 +213,25 @@ function createWindow() {
     frame: false, // Frameless window for custom title bar
   })
 
-  // Load the Next.js app. Prefer static export when present, otherwise use a running local server.
+  // Load the app URL in priority order:
+  // 1) explicit ELECTRON_START_URL (dev/e2e),
+  // 2) packaged static export if present,
+  // 3) packaged embedded Next.js runtime server.
   const packagedIndexPath = path.join(__dirname, "../out/index.html")
-  const startUrl = !isDev && fs.existsSync(packagedIndexPath)
-    ? `file://${packagedIndexPath}`
-    : (process.env.ELECTRON_START_URL || "http://localhost:3000")
+  let startUrl = process.env.ELECTRON_START_URL
+
+  if (!startUrl && !isDev) {
+    if (fs.existsSync(packagedIndexPath)) {
+      startUrl = `file://${packagedIndexPath}`
+    } else {
+      startUrl = await ensureEmbeddedNextServer()
+    }
+  }
+
+  if (!startUrl) {
+    startUrl = "http://localhost:3000"
+  }
+  writeLog("info", "Loading renderer URL", { startUrl, isDev })
 
   mainWindow.loadURL(startUrl)
 
@@ -43,6 +248,16 @@ function createWindow() {
 
 // Create window when Electron is ready
 app.whenReady().then(() => {
+  process.env.DESKTOP_APP_LOG_PATH = getLogPath()
+  writeLog("info", "Electron app ready", { version: app.getVersion() })
+  session.defaultSession.setDisplayMediaRequestHandler(
+    async (_request, callback) => {
+      const sources = await desktopCapturer.getSources({ types: ["screen", "window"] })
+      callback({ video: sources[0], audio: false })
+    },
+    { useSystemPicker: true },
+  )
+
   createWindow()
 
   app.on("activate", () => {
@@ -54,9 +269,23 @@ app.whenReady().then(() => {
 
 // Quit when all windows are closed, except on macOS
 app.on("window-all-closed", () => {
+  writeLog("info", "All windows closed")
+  if (embeddedNextServer) {
+    embeddedNextServer.close()
+    embeddedNextServer = null
+    embeddedNextUrl = null
+  }
+  if (backendProcess) {
+    backendProcess.kill("SIGTERM")
+    backendProcess = null
+  }
   if (process.platform !== "darwin") {
     app.quit()
   }
+})
+
+app.on("before-quit", () => {
+  writeLog("info", "App quitting")
 })
 
 // IPC handlers for window controls
@@ -76,6 +305,41 @@ ipcMain.on("maximize-window", () => {
 
 ipcMain.on("close-window", () => {
   if (mainWindow) mainWindow.close()
+})
+
+ipcMain.on("renderer-log", (_event, payload) => {
+  const level = payload?.level || "info"
+  const message = payload?.message || ""
+  const meta = payload?.meta || {}
+  writeLog(level, `renderer: ${message}`, meta)
+})
+
+ipcMain.handle("get-diagnostics", async () => {
+  const logPath = getLogPath()
+  let recentLogs = []
+  try {
+    if (fs.existsSync(logPath)) {
+      const lines = fs
+        .readFileSync(logPath, "utf8")
+        .split("\n")
+        .filter(Boolean)
+      recentLogs = lines.slice(-120)
+    }
+  } catch (error) {
+    writeLog("error", "Failed reading diagnostics logs", { error: String(error) })
+  }
+  return {
+    backendBaseUrl,
+    backendHealthy: backendBaseUrl ? await isBackendHealthy(backendBaseUrl) : false,
+    backendLastError,
+    logPath,
+    recentLogs,
+  }
+})
+
+ipcMain.handle("open-log-directory", () => {
+  const logDir = ensureLogDir()
+  return shell.openPath(logDir)
 })
 
 // File system operations
@@ -142,43 +406,79 @@ ipcMain.handle("save-file", async (event, { content, defaultPath, filters }) => 
 
 // Screen capture functionality
 ipcMain.handle("get-screen-sources", async () => {
-  const sources = await desktopCapturer.getSources({
-    types: ["screen", "window"],
-    thumbnailSize: { width: 320, height: 180 },
-  })
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 320, height: 180 },
+    })
 
-  return sources.map((source) => ({
-    id: source.id,
-    name: source.name,
-    thumbnail: source.thumbnail.toDataURL(),
-  }))
+    const mapped = sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      thumbnail: source.thumbnail.toDataURL(),
+    }))
+    writeLog("info", "Fetched screen sources", { count: mapped.length })
+    return mapped
+  } catch (error) {
+    writeLog("error", "get-screen-sources failed", { error: String(error) })
+    console.error("get-screen-sources failed:", error)
+    return []
+  }
+})
+
+ipcMain.handle("get-screen-access-status", () => {
+  if (process.platform !== "darwin") {
+    return "granted"
+  }
+  try {
+    return systemPreferences.getMediaAccessStatus("screen")
+  } catch (_) {
+    return "unknown"
+  }
+})
+
+ipcMain.handle("open-screen-permission-settings", async () => {
+  if (process.platform !== "darwin") {
+    return false
+  }
+  return shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
 })
 
 ipcMain.handle("capture-screen", async (event, sourceId) => {
-  const sources = await desktopCapturer.getSources({
-    types: ["screen", "window"],
-    thumbnailSize: { width: 1920, height: 1080 },
-  })
-  const selectedSource = sources.find((source) => source.id === sourceId)
-  return selectedSource ? selectedSource.thumbnail.toDataURL() : null
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 1920, height: 1080 },
+    })
+    const selectedSource = sources.find((source) => source.id === sourceId)
+    return selectedSource ? selectedSource.thumbnail.toDataURL() : null
+  } catch (error) {
+    writeLog("error", "capture-screen failed", { sourceId, error: String(error) })
+    throw error
+  }
 })
 
 ipcMain.handle("capture-screen-area", async (event, bounds) => {
-  const { x, y, width, height } = bounds
-  const sources = await desktopCapturer.getSources({
-    types: ["screen"],
-    thumbnailSize: { width: width * 2, height: height * 2 }, // Higher resolution for better quality
-  })
+  try {
+    const { x, y, width, height } = bounds
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: width * 2, height: height * 2 }, // Higher resolution for better quality
+    })
 
-  if (sources.length === 0) return null
+    if (sources.length === 0) return null
 
-  // Crop directly from nativeImage in main process.
-  const screenshot = sources[0].thumbnail
-  const cropped = screenshot.crop({
-    x: Math.max(0, Math.floor(x * 2)),
-    y: Math.max(0, Math.floor(y * 2)),
-    width: Math.max(1, Math.floor(width * 2)),
-    height: Math.max(1, Math.floor(height * 2)),
-  })
-  return cropped.toDataURL()
+    // Crop directly from nativeImage in main process.
+    const screenshot = sources[0].thumbnail
+    const cropped = screenshot.crop({
+      x: Math.max(0, Math.floor(x * 2)),
+      y: Math.max(0, Math.floor(y * 2)),
+      width: Math.max(1, Math.floor(width * 2)),
+      height: Math.max(1, Math.floor(height * 2)),
+    })
+    return cropped.toDataURL()
+  } catch (error) {
+    writeLog("error", "capture-screen-area failed", { bounds, error: String(error) })
+    throw error
+  }
 })

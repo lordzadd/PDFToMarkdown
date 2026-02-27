@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "dev:local": "sh -c 'PORT=${FASTAPI_PORT:-8014}; API=${FASTAPI_BASE_URL:-http://127.0.0.1:$PORT}; concurrently -k \"FASTAPI_PORT=$PORT npm run backend:dev\" \"FASTAPI_BASE_URL=$API npm run dev\"'",
+    "test:backend:smoke": "bash ./scripts/backend-smoke-test.sh",
+    "test:electron:buttons": "node ./scripts/electron-button-audit.js",
+    "test:desktop:full": "bash ./scripts/desktop-doctor.sh",
     "test:web:smoke": "bash ./scripts/playwright-web-smoke.sh",
     "test:web:e2e": "bash ./scripts/cleanup-test-processes.sh && env -u NO_COLOR /usr/bin/arch -arm64 playwright test --config=playwright.config.ts",
     "test:web:e2e:headed": "bash ./scripts/cleanup-test-processes.sh && env -u NO_COLOR /usr/bin/arch -arm64 playwright test --config=playwright.config.ts --headed",
@@ -13,7 +16,9 @@
     "start": "next start",
     "lint": "next lint",
     "electron:dev": "bash ./scripts/start-electron-dev.sh",
-    "electron:build": "next build && electron-builder",
+    "electron:icons": "bash ./scripts/generate-electron-icons.sh",
+    "electron:build": "npm run electron:icons && next build && electron-builder --mac --arm64 --publish never",
+    "electron:dist": "npm run electron:icons && next build && electron-builder --mac dmg zip --arm64 --publish never",
     "electron:start": "bash ./scripts/start-electron-dev.sh",
     "server": "node electron/server.js"
   },
@@ -55,7 +60,6 @@
     "cors": "^2.8.5",
     "date-fns": "^3.3.1",
     "dotenv": "^16.5.0",
-    "electron": "^29.1.0",
     "embla-carousel-react": "^8.0.0",
     "express": "^5.1.0",
     "input-otp": "^1.0.1",
@@ -94,8 +98,52 @@
     "wait-on": "^7.2.0"
   },
   "main": "electron/main.js",
-  "directories": {
-    "lib": "lib"
+  "build": {
+    "appId": "com.tingyun.snippingtool",
+    "productName": "Tingyun Snipping Tool",
+    "files": [
+      "electron/**/*",
+      ".next/**/*",
+      "public/**/*",
+      "app/**/*",
+      "components/**/*",
+      "hooks/**/*",
+      "lib/**/*",
+      "styles/**/*",
+      "types/**/*",
+      "package.json",
+      "next.config.js",
+      "next.config.mjs"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend"
+      },
+      {
+        "from": "../Scripts",
+        "to": "Scripts"
+      }
+    ],
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icons/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icons/512x512.png"
+    }
   },
   "keywords": [],
   "author": "",
