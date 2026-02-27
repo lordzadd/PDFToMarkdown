@@ -107,6 +107,15 @@ async function findAvailablePort(startPort) {
   return null
 }
 
+async function waitForPortRelease(port, timeoutMs = 1200) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (!isPortInUse(port)) return true
+    await sleep(120)
+  }
+  return !isPortInUse(port)
+}
+
 function resolveBackendRoot() {
   if (isDev) {
     // Repository layout: <root>/tingyun sipping tool/electron/main.js and <root>/backend.
@@ -132,7 +141,7 @@ async function ensureBackendServer() {
     const killed = terminatePortListeners(port)
     if (killed > 0) {
       writeLog("warn", "Terminated existing process(es) on backend port", { port, killed })
-      await sleep(1200)
+      await waitForPortRelease(port, 1200)
     }
   }
 
@@ -161,11 +170,11 @@ async function ensureBackendServer() {
 
   const pythonCandidates = [
     process.env.PYTHON_PATH ? { cmd: process.env.PYTHON_PATH, prefixArgs: [] } : null,
-    { cmd: "/opt/homebrew/bin/python3", prefixArgs: [] },
-    { cmd: "/usr/local/bin/python3", prefixArgs: [] },
     { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
     { cmd: "/usr/bin/python3", prefixArgs: [] },
     { cmd: "python3", prefixArgs: [] },
+    { cmd: "/opt/homebrew/bin/python3", prefixArgs: [] },
+    { cmd: "/usr/local/bin/python3", prefixArgs: [] },
   ].filter(Boolean)
 
   for (const candidate of pythonCandidates) {
