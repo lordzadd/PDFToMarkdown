@@ -482,11 +482,16 @@ const TingyunSnippingTool = () => {
     if (isElectron) {
       try {
         const permissionStatus = await window.electron.screenCapture.getPermissionStatus()
-        setScreenAccessStatus(permissionStatus)
         const sources = await window.electron.screenCapture.getSources()
+        const effectiveStatus = sources.length > 0 ? "granted" : permissionStatus
+        setScreenAccessStatus(effectiveStatus)
         setScreenSources(sources)
         setIsScreenSourcesDialogOpen(true)
-        logInfo("Screen sources dialog opened", { permissionStatus, sourceCount: sources.length })
+        logInfo("Screen sources dialog opened", {
+          permissionStatus,
+          effectiveStatus,
+          sourceCount: sources.length,
+        })
       } catch (error) {
         logError("Error getting screen sources", { error: String(error) })
         const msg = error instanceof Error ? error.message : "Unknown error"
@@ -519,6 +524,28 @@ const TingyunSnippingTool = () => {
   }
 
   const handleSystemScreenCapture = async () => {
+    if (isElectron) {
+      if (window.electron?.screenCapture?.captureWithSystemTool) {
+        try {
+          const imageData = await window.electron.screenCapture.captureWithSystemTool()
+          if (!imageData) {
+            return
+          }
+          setIsScreenSourcesDialogOpen(false)
+          await addCapturedImageToHistory(imageData, "Screenshot")
+          logInfo("Captured screenshot via macOS screencapture fallback")
+          return
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown native capture error"
+          logError("Native screenshot capture failed", { message })
+          alert(`Native screenshot capture failed: ${message}. Please verify Screen Recording permissions and retry.`)
+          return
+        }
+      }
+      alert("Native screenshot tool is unavailable in this runtime.")
+      return
+    }
+
     let systemPickerError: string | null = null
     try {
       const mediaStream = await navigator.mediaDevices.getDisplayMedia({
