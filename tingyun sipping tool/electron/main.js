@@ -2,7 +2,8 @@ const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, screen, shell, sys
 const path = require("path")
 const fs = require("fs")
 const http = require("http")
-const { spawn } = require("child_process")
+const net = require("net")
+const { spawn, spawnSync } = require("child_process")
 const isDev = !app.isPackaged
 
 // Keep a global reference of the window object to prevent garbage collection
@@ -54,6 +55,54 @@ async function isBackendHealthy(baseUrl) {
   }
 }
 
+function isPortInUse(port) {
+  const res = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" })
+  return res.status === 0 && Boolean(res.stdout && res.stdout.trim())
+}
+
+function terminatePortListeners(port) {
+  const res = spawnSync("lsof", ["-t", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" })
+  if (res.status !== 0 || !res.stdout) {
+    return 0
+  }
+  const pids = res.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => Number.parseInt(line, 10))
+    .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid)
+
+  let killed = 0
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM")
+      killed += 1
+    } catch (_) {
+      // ignore
+    }
+  }
+  return killed
+}
+
+async function findAvailablePort(startPort) {
+  const maxChecks = 30
+  for (let offset = 0; offset < maxChecks; offset += 1) {
+    const candidate = startPort + offset
+    const free = await new Promise((resolve) => {
+      const server = net.createServer()
+      server.once("error", () => resolve(false))
+      server.once("listening", () => {
+        server.close(() => resolve(true))
+      })
+      server.listen(candidate, "127.0.0.1")
+    })
+    if (free) {
+      return candidate
+    }
+  }
+  return null
+}
+
 function resolveBackendRoot() {
   if (isDev) {
     // Repository layout: <root>/tingyun sipping tool/electron/main.js and <root>/backend.
@@ -65,14 +114,35 @@ function resolveBackendRoot() {
 }
 
 async function ensureBackendServer() {
-  const port = Number(process.env.FASTAPI_PORT || 8014)
-  const baseUrl = `http://127.0.0.1:${port}`
+  let port = Number(process.env.FASTAPI_PORT || 8014)
+  let baseUrl = `http://127.0.0.1:${port}`
   backendBaseUrl = baseUrl
   backendLastError = null
 
   if (await isBackendHealthy(baseUrl)) {
     writeLog("info", "Backend already healthy", { baseUrl })
     return baseUrl
+  }
+
+  if (isPortInUse(port)) {
+    const killed = terminatePortListeners(port)
+    if (killed > 0) {
+      writeLog("warn", "Terminated existing process(es) on backend port", { port, killed })
+      await sleep(1200)
+    }
+  }
+
+  if (isPortInUse(port) && !(await isBackendHealthy(baseUrl))) {
+    const fallbackPort = await findAvailablePort(port + 1)
+    if (fallbackPort) {
+      writeLog("warn", "Primary backend port unavailable, switching to fallback port", {
+        fromPort: port,
+        toPort: fallbackPort,
+      })
+      port = fallbackPort
+      baseUrl = `http://127.0.0.1:${port}`
+      backendBaseUrl = baseUrl
+    }
   }
 
   const backendRoot = resolveBackendRoot()
@@ -86,14 +156,35 @@ async function ensureBackendServer() {
   writeLog("info", "Attempting backend startup", { backendRoot, baseUrl, isDev })
 
   const pythonCandidates = [
-    { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
     process.env.PYTHON_PATH ? { cmd: process.env.PYTHON_PATH, prefixArgs: [] } : null,
+    { cmd: "/opt/homebrew/bin/python3", prefixArgs: [] },
+    { cmd: "/usr/local/bin/python3", prefixArgs: [] },
+    { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
     { cmd: "/usr/bin/python3", prefixArgs: [] },
     { cmd: "python3", prefixArgs: [] },
   ].filter(Boolean)
 
   for (const candidate of pythonCandidates) {
     try {
+      const probeArgs = [...(candidate.prefixArgs || []), "-c", "import fastapi,uvicorn,pydantic; print('ok')"]
+      const probe = spawnSync(candidate.cmd, probeArgs, {
+        cwd: backendRoot,
+        env: {
+          ...process.env,
+          PATH: `/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
+        },
+        encoding: "utf8",
+        timeout: 3000,
+      })
+      if (probe.status !== 0) {
+        const reason = (probe.stderr || probe.stdout || "dependency probe failed").trim().slice(0, 500)
+        writeLog("warn", "Skipping python candidate; required backend deps unavailable", {
+          cmd: candidate.cmd,
+          reason,
+        })
+        continue
+      }
+
       const backendArgs = [
         ...(candidate.prefixArgs || []),
         "-m",
@@ -121,10 +212,15 @@ async function ensureBackendServer() {
         },
       )
 
-      backendProcess.stdout.on("data", (chunk) => process.stdout.write(`[backend] ${chunk}`))
+      backendProcess.stdout.on("data", (chunk) => {
+        const text = chunk.toString()
+        writeLog("info", "backend stdout", { cmd: candidate.cmd, line: text.trim().slice(0, 500) })
+        process.stdout.write(`[backend] ${chunk}`)
+      })
       backendProcess.stderr.on("data", (chunk) => {
         const line = chunk.toString()
         backendLastError = line.trim().slice(0, 500)
+        writeLog("error", "backend stderr", { cmd: candidate.cmd, line: backendLastError })
         process.stderr.write(`[backend] ${chunk}`)
       })
       backendProcess.on("exit", (code) => {

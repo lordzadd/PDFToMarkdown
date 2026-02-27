@@ -892,7 +892,8 @@ const TingyunSnippingTool = () => {
     await new Promise((resolve) => setTimeout(resolve, 120))
 
     const formData = new FormData()
-    formData.append("pdf", file, file.name)
+    // Send canonical FastAPI field name; backend also accepts legacy `pdf` for compatibility.
+    formData.append("file", file, file.name)
     formData.append("options", JSON.stringify(commonOptions))
 
     setCurrentStep("Uploading PDF to backend")

@@ -104,13 +104,9 @@
     "files": [
       "electron/**/*",
       ".next/**/*",
+      "!.next/cache/**",
+      "!.next/**/*.map",
       "public/**/*",
-      "app/**/*",
-      "components/**/*",
-      "hooks/**/*",
-      "lib/**/*",
-      "styles/**/*",
-      "types/**/*",
       "package.json",
       "next.config.js",
       "next.config.mjs"

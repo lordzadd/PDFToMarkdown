@@ -144,14 +144,6 @@ export function createModelRoute(frontendModel: string) {
         )
       }
 
-      const formData = await request.formData()
-      const pdf = formData.get('pdf')
-      const options = formData.get('options')
-
-      if (!(pdf instanceof File)) {
-        return NextResponse.json({ error: 'No PDF uploaded in field `pdf`.' }, { status: 400 })
-      }
-
       // Vercel serverless request body limits are strict; fail early with clear guidance.
       // Keep this guard scoped to hosted/serverless deployments so local Electron stays unrestricted.
       const enforceUploadLimit =
@@ -159,47 +151,30 @@ export function createModelRoute(frontendModel: string) {
         process.env.VERCEL === '1' ||
         process.env.NODE_ENV === 'production'
       const maxPdfBytes = Number(process.env.MAX_WEB_PDF_BYTES || 4_000_000)
-      if (enforceUploadLimit && pdf.size > maxPdfBytes) {
+      const contentLengthRaw = request.headers.get('content-length')
+      const contentLength = contentLengthRaw ? Number.parseInt(contentLengthRaw, 10) : NaN
+      if (enforceUploadLimit && Number.isFinite(contentLength) && contentLength > maxPdfBytes) {
         return NextResponse.json(
           {
             error:
-              `PDF is too large for web deployment upload proxy (${Math.ceil(pdf.size / 1024 / 1024)}MB). ` +
+              `PDF is too large for web deployment upload proxy (${Math.ceil(contentLength / 1024 / 1024)}MB). ` +
               `Maximum supported here is about ${Math.floor(maxPdfBytes / 1024 / 1024)}MB. ` +
               'Use local Electron mode for larger files, or host backend separately and upload directly there.',
           },
           { status: 413 },
         )
       }
-
-      const backendForm = new FormData()
-      backendForm.append('file', pdf, pdf.name || 'upload.pdf')
-      if (typeof options === 'string' && options.trim()) {
-        try {
-          const parsedOptions = JSON.parse(options)
-          if (!parsedOptions || typeof parsedOptions !== 'object' || Array.isArray(parsedOptions)) {
-            throw new Error('options must be a JSON object')
-          }
-          backendForm.append('options', JSON.stringify(parsedOptions))
-        } catch (error) {
-          const optionError = error instanceof Error ? error.message : String(error)
-          logConvert('warn', 'Invalid options payload', {
-            reqId,
-            frontendModel,
-            optionError,
-            optionsSnippet: safeJsonSnippet(options, 300),
-          })
-          return NextResponse.json(
-            {
-              error: `Invalid \`options\` JSON payload: ${optionError}`,
-            },
-            { status: 400 },
-          )
-        }
+      // Do not parse multipart in Next packaged runtime; forward raw body to FastAPI.
+      // This avoids undici/busboy parser crashes seen in packaged Electron mode.
+      const rawBody = await request.arrayBuffer()
+      const forwardHeaders: Record<string, string> = {
+        'content-type': contentType,
       }
 
       const response = await fetch(`${baseUrl}/convert/${encodeURIComponent(frontendModel)}`, {
         method: 'POST',
-        body: backendForm,
+        headers: forwardHeaders,
+        body: rawBody,
       })
 
       const raw = await response.text()

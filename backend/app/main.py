@@ -78,14 +78,20 @@ def list_models() -> list[ModelInfo]:
 @app.post("/convert/{model_id}", response_model=ConversionResponse)
 async def convert_pdf(
     model_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    pdf: UploadFile | None = File(default=None),
     options: str = Form(default="{}"),
 ) -> ConversionResponse:
     adapter = REGISTRY.get(model_id)
     if adapter is None:
         raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
 
-    if not file.filename.lower().endswith(".pdf"):
+    uploaded = file or pdf
+    if uploaded is None:
+        raise HTTPException(status_code=400, detail="No PDF uploaded in field `file` (or legacy field `pdf`).")
+
+    filename = uploaded.filename or "upload.pdf"
+    if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
 
     parsed_options: dict[str, Any] = parse_options_json(options)
@@ -94,7 +100,7 @@ async def convert_pdf(
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
             temp_path = temp_file.name
-            temp_file.write(await file.read())
+            temp_file.write(await uploaded.read())
 
         if hasattr(adapter, "convert_with_meta"):
             markdown, execution_meta = adapter.convert_with_meta(temp_path, parsed_options)
