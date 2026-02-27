@@ -1522,22 +1522,20 @@ const TingyunSnippingTool = () => {
           </div>
           <span className="text-sm text-gray-700">Tingyun Snipping Tool - Snip Create</span>
         </div>
-        {!isElectron && (
-          <div
-            className={`flex items-center gap-2 ${isElectron ? "no-drag-region" : ""}`}
-            style={isElectron ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined}
-          >
-            <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMinimizeWindow}>
-              <Minus size={16} />
-            </button>
-            <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMaximizeWindow}>
-              <SquareIcon size={16} />
-            </button>
-            <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleCloseWindow}>
-              <X size={16} />
-            </button>
-          </div>
-        )}
+        <div
+          className={`flex items-center gap-2 ${isElectron ? "no-drag-region" : ""}`}
+          style={isElectron ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined}
+        >
+          <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMinimizeWindow}>
+            <Minus size={16} />
+          </button>
+          <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMaximizeWindow}>
+            <SquareIcon size={16} />
+          </button>
+          <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleCloseWindow}>
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
       {/* Toolbar */}

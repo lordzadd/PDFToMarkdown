@@ -478,6 +478,10 @@ async function createWindow() {
 
   mainWindow.loadURL(startUrl)
 
+  if (process.platform === "darwin" && typeof mainWindow.setWindowButtonVisibility === "function") {
+    mainWindow.setWindowButtonVisibility(false)
+  }
+
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     writeLog("error", "Renderer failed to load URL", {
       errorCode,

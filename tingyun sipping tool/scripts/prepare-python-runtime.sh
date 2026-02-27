@@ -9,6 +9,9 @@ STAMP_FILE="$PY_RUNTIME_DIR/.requirements.sha256"
 
 pick_builder_python() {
   local candidates=(
+    "$(command -v python3.12 || true)"
+    "$(command -v python3.11 || true)"
+    "$(command -v python3.10 || true)"
     "/opt/homebrew/bin/python3"
     "/usr/local/bin/python3"
     "$(command -v python3 || true)"
@@ -18,13 +21,30 @@ pick_builder_python() {
     [[ -x "$candidate" ]] || continue
     if "$candidate" - <<'PY' >/dev/null 2>&1
 import sys
-raise SystemExit(0 if sys.version_info >= (3, 9) else 1)
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
 PY
     then
       echo "$candidate"
       return 0
     fi
   done
+
+  if command -v uv >/dev/null 2>&1; then
+    uv python install 3.11 --quiet >/dev/null 2>&1 || true
+    local uv_py
+    uv_py="$(uv python find 3.11 2>/dev/null || true)"
+    if [[ -n "${uv_py:-}" && -x "$uv_py" ]]; then
+      if "$uv_py" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+      then
+        echo "$uv_py"
+        return 0
+      fi
+    fi
+  fi
+
   return 1
 }
 
@@ -48,7 +68,7 @@ rm -rf "$PY_RUNTIME_DIR"
 
 BUILDER_PY="$(pick_builder_python || true)"
 if [[ -z "${BUILDER_PY:-}" ]]; then
-  echo "No compatible Python (>=3.9) found. Install one (e.g. /opt/homebrew/bin/python3) and retry." >&2
+  echo "No compatible Python (>=3.10) found. Install one (or install uv) and retry." >&2
   exit 1
 fi
 

@@ -61,17 +61,21 @@ class DoclingConverter:
                     converter = DocumentConverter()
                     result = converter.convert(source_pdf_path)
                     markdown = result.document.export_to_markdown()
+                    if not isinstance(markdown, str) or not markdown.strip():
+                        reason = "docling conversion returned empty content"
+                        markdown = ""
                     self.last_run = {
                         "engine_used": "docling",
                         "provider_used": "local",
                         "fallback_used": False,
                         "note": None,
                     }
-                except Exception:
+                except Exception as exc:
+                    reason = f"docling conversion failed at runtime: {exc}"
                     markdown = ""
 
             if not markdown:
-                fallback_reason = reason if not available else "docling conversion failed at runtime"
+                fallback_reason = reason or "docling conversion failed at runtime"
                 self.last_run = {
                     "engine_used": "ocr-only",
                     "provider_used": "local",
