@@ -188,7 +188,7 @@ const TingyunSnippingTool = () => {
   const [activeTab, setActiveTab] = useState("latex")
   const [isHandwritingMode, setIsHandwritingMode] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [selectedModel, setSelectedModel] = useState("markitdown")
+  const [selectedModel, setSelectedModel] = useState("docling")
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [pdfFilePath, setPdfFilePath] = useState<string | null>(null)
   const [isConverting, setIsConverting] = useState(false)
