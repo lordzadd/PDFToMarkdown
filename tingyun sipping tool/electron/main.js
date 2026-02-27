@@ -331,6 +331,30 @@ async function createWindow() {
   void kickOffBackendStartup()
   writeLog("info", "Creating application window", { backendUrl: process.env.FASTAPI_BASE_URL || null })
 
+  if (process.platform === "darwin" && app.isPackaged) {
+    try {
+      const exePath = app.getPath("exe")
+      const isTranslocated = exePath.includes("/AppTranslocation/")
+      const inApplications = exePath.startsWith("/Applications/")
+      if (isTranslocated || !inApplications) {
+        writeLog("warn", "App launched outside /Applications; macOS permissions may not persist", { exePath })
+        dialog
+          .showMessageBox({
+            type: "warning",
+            title: "Move App to Applications",
+            message:
+              "For stable Screen Recording permissions, run Tingyun Snipping Tool from /Applications and relaunch.",
+            detail: `Current executable path:\n${exePath}`,
+            buttons: ["OK"],
+            defaultId: 0,
+          })
+          .catch(() => {})
+      }
+    } catch (error) {
+      writeLog("warn", "Failed to inspect macOS app location", { error: String(error) })
+    }
+  }
+
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
 
   // Create the browser window
