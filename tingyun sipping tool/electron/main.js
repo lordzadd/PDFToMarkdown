@@ -88,6 +88,30 @@ function terminatePortListeners(port) {
   return killed
 }
 
+function terminateStaleBackendProcesses() {
+  const res = spawnSync("pgrep", ["-f", "uvicorn backend.app.main:app"], { encoding: "utf8" })
+  if (res.status !== 0 || !res.stdout) {
+    return 0
+  }
+  const pids = res.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => Number.parseInt(line, 10))
+    .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid)
+
+  let killed = 0
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM")
+      killed += 1
+    } catch (_) {
+      // ignore
+    }
+  }
+  return killed
+}
+
 async function findAvailablePort(startPort) {
   const maxChecks = 30
   for (let offset = 0; offset < maxChecks; offset += 1) {
@@ -141,9 +165,20 @@ async function ensureBackendServer() {
   backendBaseUrl = baseUrl
   backendLastError = null
 
-  if (await isBackendHealthy(baseUrl)) {
+  // In packaged desktop mode we must always own the backend process.
+  // Reusing an already-healthy listener can bind us to a stale backend
+  // from an older app build and silently reintroduce fallback behavior.
+  if (isDev && (await isBackendHealthy(baseUrl))) {
     writeLog("info", "Backend already healthy", { baseUrl })
     return baseUrl
+  }
+
+  if (!isDev) {
+    const killedStale = terminateStaleBackendProcesses()
+    if (killedStale > 0) {
+      writeLog("warn", "Terminated stale backend process(es)", { killed: killedStale })
+      await sleep(300)
+    }
   }
 
   if (isPortInUse(port)) {
@@ -257,6 +292,8 @@ async function ensureBackendServer() {
       })
       backendProcess.on("exit", (code) => {
         writeLog("warn", "Backend process exited", { code, cmd: candidate.cmd })
+        backendProcess = null
+        backendStartupPromise = null
       })
 
       const deadline = Date.now() + 30000
@@ -347,6 +384,9 @@ async function ensureEmbeddedNextServer() {
 }
 
 async function createWindow() {
+  if (!backendProcess) {
+    backendStartupPromise = null
+  }
   void kickOffBackendStartup()
   writeLog("info", "Creating application window", { backendUrl: process.env.FASTAPI_BASE_URL || null })
 
@@ -386,7 +426,8 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     },
     icon: path.join(__dirname, "../public/tingyun-logo.png"),
-    frame: false, // Frameless window for custom title bar
+    frame: true,
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" } : {}),
   })
 
   // Load the app URL in priority order:
@@ -456,6 +497,9 @@ app.on("window-all-closed", () => {
     backendProcess.kill("SIGTERM")
     backendProcess = null
   }
+  backendStartupPromise = null
+  backendBaseUrl = null
+  backendLastError = null
   if (process.platform !== "darwin") {
     app.quit()
   }
@@ -478,6 +522,15 @@ ipcMain.on("maximize-window", () => {
       mainWindow.maximize()
     }
   }
+})
+
+ipcMain.on("restore-window", () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.show()
+  mainWindow.focus()
 })
 
 ipcMain.on("close-window", () => {
@@ -514,9 +567,65 @@ ipcMain.handle("get-diagnostics", async () => {
   }
 })
 
+ipcMain.handle("ensure-backend-ready", async () => {
+  try {
+    backendStartupPromise = null
+    const url = await kickOffBackendStartup()
+    const healthy = url ? await isBackendHealthy(url) : false
+    return {
+      ok: healthy,
+      backendBaseUrl: url || backendBaseUrl,
+      backendLastError,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    backendLastError = message
+    writeLog("error", "ensure-backend-ready failed", { error: message })
+    return {
+      ok: false,
+      backendBaseUrl,
+      backendLastError,
+    }
+  }
+})
+
 ipcMain.handle("open-log-directory", () => {
   const logDir = ensureLogDir()
   return shell.openPath(logDir)
+})
+
+ipcMain.handle("write-debug-capture", async (_event, payload) => {
+  try {
+    const capturesDir = path.join(ensureLogDir(), "captures")
+    fs.mkdirSync(capturesDir, { recursive: true })
+    const stamp = Date.now()
+    const prefixRaw = typeof payload?.prefix === "string" ? payload.prefix : "capture"
+    const prefix = prefixRaw.replace(/[^a-zA-Z0-9_-]/g, "_")
+
+    const imageBase64 = typeof payload?.imageBase64 === "string" ? payload.imageBase64 : ""
+    const pdfBase64 = typeof payload?.pdfBase64 === "string" ? payload.pdfBase64 : ""
+
+    const paths = { imagePath: null, pdfPath: null }
+
+    if (imageBase64) {
+      const imagePath = path.join(capturesDir, `${prefix}-${stamp}.png`)
+      fs.writeFileSync(imagePath, Buffer.from(imageBase64, "base64"))
+      paths.imagePath = imagePath
+    }
+
+    if (pdfBase64) {
+      const pdfPath = path.join(capturesDir, `${prefix}-${stamp}.pdf`)
+      fs.writeFileSync(pdfPath, Buffer.from(pdfBase64, "base64"))
+      paths.pdfPath = pdfPath
+    }
+
+    writeLog("info", "Saved debug capture artifacts", paths)
+    return { ok: true, ...paths }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    writeLog("error", "Failed to write debug capture artifacts", { error: message })
+    return { ok: false, error: message }
+  }
 })
 
 // File system operations
@@ -666,7 +775,18 @@ ipcMain.handle("capture-screen-system", async () => {
   }
 
   const tmpPath = path.join(app.getPath("temp"), `tingyun-system-capture-${Date.now()}.png`)
+  const windowRef = mainWindow
+  const shouldRestoreWindow = Boolean(windowRef && !windowRef.isDestroyed() && !windowRef.isMinimized())
   try {
+    if (shouldRestoreWindow) {
+      try {
+        windowRef.minimize()
+        await sleep(220)
+      } catch (_) {
+        // ignore minimize errors and continue capture
+      }
+    }
+
     const ok = await new Promise((resolve, reject) => {
       execFile("screencapture", ["-i", "-x", tmpPath], (error) => {
         if (error) {
@@ -692,6 +812,15 @@ ipcMain.handle("capture-screen-system", async () => {
     writeLog("error", "capture-screen-system failed", { error: String(error) })
     throw error
   } finally {
+    if (shouldRestoreWindow && windowRef && !windowRef.isDestroyed()) {
+      try {
+        windowRef.restore()
+        windowRef.show()
+        windowRef.focus()
+      } catch (_) {
+        // ignore restore errors
+      }
+    }
     try {
       if (fs.existsSync(tmpPath)) {
         fs.unlinkSync(tmpPath)

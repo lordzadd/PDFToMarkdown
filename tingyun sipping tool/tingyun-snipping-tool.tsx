@@ -398,6 +398,34 @@ const TingyunSnippingTool = () => {
     resetLoadedDocumentState()
   }
 
+  const saveDebugCaptureArtifacts = async (prefix: string, imageFile: File, pdfFileFromImage: File) => {
+    if (!isElectron || !window.electron?.diagnostics?.writeDebugCapture) return
+    try {
+      const toBase64 = (buffer: ArrayBuffer): string => {
+        const bytes = new Uint8Array(buffer)
+        const chunkSize = 0x8000
+        let binary = ""
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          const chunk = bytes.subarray(i, i + chunkSize)
+          binary += String.fromCharCode(...chunk)
+        }
+        return btoa(binary)
+      }
+      const [imageBuffer, pdfBuffer] = await Promise.all([imageFile.arrayBuffer(), pdfFileFromImage.arrayBuffer()])
+      const imageBase64 = toBase64(imageBuffer)
+      const pdfBase64 = toBase64(pdfBuffer)
+      const saved = await window.electron.diagnostics.writeDebugCapture({
+        prefix,
+        imageBase64,
+        pdfBase64,
+      })
+      logInfo("Saved capture debug artifacts", { prefix, saved })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logError("Failed to save capture debug artifacts", { prefix, message })
+    }
+  }
+
   // Initialize canvas when handwriting mode is activated
   useEffect(() => {
     if (isHandwritingMode && canvasRef.current) {
@@ -599,6 +627,7 @@ const TingyunSnippingTool = () => {
     setUploadHistory((prev) => [newUpload, ...prev])
 
     const pdfFileFromImage = await convertImageFileToPdfFile(imageFile, `${safeStem}.pdf`)
+    await saveDebugCaptureArtifacts("screenshot", imageFile, pdfFileFromImage)
     setActivePdfInput(pdfFileFromImage)
     logInfo("Loaded captured screenshot as active PDF input", {
       imageName: imageFile.name,
@@ -607,7 +636,20 @@ const TingyunSnippingTool = () => {
       pdfBytes: pdfFileFromImage.size,
     })
 
-    await runConversionForFile(pdfFileFromImage, { autoSource: "screenshot-capture", modelId: "ocr-only" })
+    const primaryModel = isModelAvailable(selectedModel) ? selectedModel : pickPreferredAvailableModel()
+    const firstPass = await runConversionForFile(pdfFileFromImage, {
+      autoSource: "screenshot-capture",
+      modelId: primaryModel,
+    })
+    const firstPassText = normalizeNoTextPlaceholders(firstPass || "")
+
+    if (!firstPassText && primaryModel !== "ocr-only" && isModelAvailable("ocr-only")) {
+      logInfo("Screenshot OCR returned no text; retrying with OCR-only", { primaryModel })
+      await runConversionForFile(pdfFileFromImage, {
+        autoSource: "screenshot-capture-fallback",
+        modelId: "ocr-only",
+      })
+    }
   }
 
   const handleSystemScreenCapture = async () => {
@@ -988,11 +1030,20 @@ const TingyunSnippingTool = () => {
 
       const pdfBytes = await pdfDoc.save()
       const handwritingPdf = new File([pdfBytes], "handwriting.pdf", { type: "application/pdf" })
+      const handwritingPng = new File([pngBytes], "handwriting.png", { type: "image/png" })
+      await saveDebugCaptureArtifacts("handwriting", handwritingPng, handwritingPdf)
 
-      setCurrentStep("Running handwriting OCR")
+      const primaryModel = isModelAvailable(selectedModel) ? selectedModel : pickPreferredAvailableModel()
+      setCurrentStep(`Running handwriting OCR (${primaryModel})`)
       setConversionProgress(35)
-      const markdown = await runModelConversion("ocr-only", handwritingPdf)
-      const normalizedText = normalizeNoTextPlaceholders(markdown)
+      let markdown = await runModelConversion(primaryModel, handwritingPdf)
+      let normalizedText = normalizeNoTextPlaceholders(markdown)
+      if (!normalizedText && primaryModel !== "ocr-only" && isModelAvailable("ocr-only")) {
+        setCurrentStep(`No text found with ${primaryModel}. Retrying with OCR-only`)
+        setConversionProgress(60)
+        markdown = await runModelConversion("ocr-only", handwritingPdf)
+        normalizedText = normalizeNoTextPlaceholders(markdown)
+      }
       if (!normalizedText) {
         throw new Error("No handwriting text recognized. Try larger/darker writing and scan again.")
       }
@@ -1098,10 +1149,35 @@ const TingyunSnippingTool = () => {
         setCurrentStep(`Running OCR on backend (${elapsed}s elapsed)`)
       }, 900)
 
-      const response = await fetch(endpoint, {
-        method: "POST",
-        body: formData,
-      })
+      const executeRequest = async () =>
+        fetch(endpoint, {
+          method: "POST",
+          body: formData,
+        })
+
+      let response: Response
+      try {
+        response = await executeRequest()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const shouldRetryElectron =
+          isElectron &&
+          Boolean(window.electron?.diagnostics?.ensureBackendReady) &&
+          /(ECONNREFUSED|Failed to fetch|NetworkError|fetch failed|ERR_CONNECTION_REFUSED)/i.test(message)
+
+        if (!shouldRetryElectron) {
+          throw error
+        }
+
+        logInfo("Conversion request failed; attempting backend warm-up retry", { modelId, message })
+        const warmup = await window.electron.diagnostics.ensureBackendReady()
+        if (!warmup?.ok) {
+          throw new Error(
+            `Backend unavailable after retry (${warmup?.backendBaseUrl || "unknown"}): ${warmup?.backendLastError || message}`,
+          )
+        }
+        response = await executeRequest()
+      }
 
       if (!response.ok) {
         const details = await parseErrorText(response)
@@ -1129,7 +1205,7 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const runConversionForFile = async (file: File, opts: { autoSource?: string; modelId?: string } = {}) => {
+  const runConversionForFile = async (file: File, opts: { autoSource?: string; modelId?: string } = {}): Promise<string> => {
     const modelForRun = opts.modelId ?? selectedModel
     if (!isModelAvailable(modelForRun)) {
       const note = backendModelInfo[modelForRun]?.availability_note
@@ -1167,6 +1243,7 @@ const TingyunSnippingTool = () => {
       setConversionProgress(100)
       setIsConverting(false)
       setShowResult(true)
+      return result
     } catch (error) {
       const diagnostics = await fetchDiagnostics()
       const message = error instanceof Error ? error.message : "Unknown conversion error"
@@ -1185,6 +1262,7 @@ const TingyunSnippingTool = () => {
       setIsConverting(false)
       setCurrentStep("Failed")
       setConversionProgress(0)
+      return ""
     }
   }
 
@@ -1393,8 +1471,14 @@ const TingyunSnippingTool = () => {
   return (
     <div className="flex flex-col h-screen w-full border border-gray-300 bg-white">
       {/* Title bar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200">
-        <div className="flex items-center gap-2">
+      <div
+        className={`flex items-center justify-between px-4 py-2 border-b border-gray-200 ${isElectron ? "drag-region" : ""}`}
+        style={isElectron ? ({ WebkitAppRegion: "drag", userSelect: "none" } as React.CSSProperties) : undefined}
+      >
+        <div
+          className={`flex items-center gap-2 ${isElectron ? "drag-region" : ""}`}
+          style={isElectron ? ({ WebkitAppRegion: "drag", userSelect: "none" } as React.CSSProperties) : undefined}
+        >
           <div className="w-7 h-7 relative">
             <Image
               src="/tingyun-logo.png"
@@ -1406,17 +1490,22 @@ const TingyunSnippingTool = () => {
           </div>
           <span className="text-sm text-gray-700">Tingyun Snipping Tool - Snip Create</span>
         </div>
-        <div className="flex items-center gap-2">
-          <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMinimizeWindow}>
-            <Minus size={16} />
-          </button>
-          <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMaximizeWindow}>
-            <SquareIcon size={16} />
-          </button>
-          <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleCloseWindow}>
-            <X size={16} />
-          </button>
-        </div>
+        {!isElectron && (
+          <div
+            className={`flex items-center gap-2 ${isElectron ? "no-drag-region" : ""}`}
+            style={isElectron ? ({ WebkitAppRegion: "no-drag" } as React.CSSProperties) : undefined}
+          >
+            <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMinimizeWindow}>
+              <Minus size={16} />
+            </button>
+            <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleMaximizeWindow}>
+              <SquareIcon size={16} />
+            </button>
+            <button className="p-1 text-gray-500 hover:text-gray-700" onClick={handleCloseWindow}>
+              <X size={16} />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Toolbar */}
