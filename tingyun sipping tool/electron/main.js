@@ -39,6 +39,10 @@ function writeLog(level, message, meta = {}) {
   }
 }
 
+function stripAnsi(input) {
+  return String(input || "").replace(/\x1B\[[0-9;]*m/g, "")
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -218,9 +222,18 @@ async function ensureBackendServer() {
         process.stdout.write(`[backend] ${chunk}`)
       })
       backendProcess.stderr.on("data", (chunk) => {
-        const line = chunk.toString()
-        backendLastError = line.trim().slice(0, 500)
-        writeLog("error", "backend stderr", { cmd: candidate.cmd, line: backendLastError })
+        const line = stripAnsi(chunk.toString()).trim()
+        const lowered = line.toLowerCase()
+        const isErrorLike =
+          /(traceback|exception|fatal|cannot|unable|failed|error:)/i.test(line) &&
+          !/model files already exist/i.test(line)
+        const isWarnLike = /\bwarning\b|\bwarn\b/i.test(line)
+        const level = isErrorLike ? "error" : isWarnLike ? "warn" : "info"
+
+        if (isErrorLike || isWarnLike) {
+          backendLastError = line.slice(0, 500)
+        }
+        writeLog(level, "backend stderr", { cmd: candidate.cmd, line: line.slice(0, 500) })
         process.stderr.write(`[backend] ${chunk}`)
       })
       backendProcess.on("exit", (code) => {

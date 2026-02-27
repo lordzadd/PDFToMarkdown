@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import fs from 'fs'
+import http from 'http'
+import https from 'https'
 
 type SegmentType = 'title' | 'header' | 'paragraph' | 'table' | 'equation'
 
@@ -123,6 +125,57 @@ function markdownToSegments(markdown: string): Segment[] {
   return segments
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function postBackendRaw(
+  targetUrl: string,
+  headers: Record<string, string>,
+  body: Buffer,
+  timeoutMs: number,
+): Promise<{ status: number; statusText: string; bodyText: string }> {
+  return await new Promise((resolve, reject) => {
+    const parsed = new URL(targetUrl)
+    const useHttps = parsed.protocol === 'https:'
+    const transport = useHttps ? https : http
+
+    const req = transport.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port ? Number(parsed.port) : useHttps ? 443 : 80,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: 'POST',
+        headers: {
+          ...headers,
+          'content-length': String(body.byteLength),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        })
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode || 500,
+            statusText: res.statusMessage || 'Unknown',
+            bodyText: Buffer.concat(chunks).toString('utf8'),
+          })
+        })
+      },
+    )
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Backend request timeout after ${timeoutMs}ms`))
+    })
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
 export function createModelRoute(frontendModel: string) {
   return async function POST(request: Request) {
     const baseUrl = backendBaseUrl()
@@ -170,14 +223,46 @@ export function createModelRoute(frontendModel: string) {
       const forwardHeaders: Record<string, string> = {
         'content-type': contentType,
       }
+      const backendUrl = `${baseUrl}/convert/${encodeURIComponent(frontendModel)}`
+      const backendTimeoutMs = Number(process.env.BACKEND_FETCH_TIMEOUT_MS || 900_000)
+      const rawBuffer = Buffer.from(rawBody)
+      let response:
+        | { status: number; statusText: string; bodyText: string }
+        | null = null
+      let lastFetchError: unknown = null
 
-      const response = await fetch(`${baseUrl}/convert/${encodeURIComponent(frontendModel)}`, {
-        method: 'POST',
-        headers: forwardHeaders,
-        body: rawBody,
-      })
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          response = await postBackendRaw(
+            backendUrl,
+            forwardHeaders,
+            rawBuffer,
+            backendTimeoutMs,
+          )
+          break
+        } catch (error) {
+          lastFetchError = error
+          const errMessage = error instanceof Error ? error.message : String(error)
+          logConvert('warn', 'Backend fetch attempt failed', {
+            reqId,
+            frontendModel,
+            backendUrl: baseUrl,
+            attempt,
+            errMessage,
+          })
+          if (attempt < 2) {
+            await delay(800)
+            continue
+          }
+        }
+      }
 
-      const raw = await response.text()
+      if (!response) {
+        const errMessage = lastFetchError instanceof Error ? lastFetchError.message : String(lastFetchError)
+        throw new Error(`Backend request failed: ${errMessage}`)
+      }
+
+      const raw = response.bodyText
       let payload: Record<string, unknown> = {}
       if (raw) {
         try {
@@ -187,7 +272,7 @@ export function createModelRoute(frontendModel: string) {
         }
       }
 
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         const detailCandidate = payload?.detail ?? payload?.error
         const detail =
           typeof detailCandidate === 'string'
