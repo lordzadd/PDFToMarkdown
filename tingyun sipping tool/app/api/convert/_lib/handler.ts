@@ -197,12 +197,12 @@ export function createModelRoute(frontendModel: string) {
         )
       }
 
-      // Vercel serverless request body limits are strict; fail early with clear guidance.
-      // Keep this guard scoped to hosted/serverless deployments so local Electron stays unrestricted.
+      // Vercel/serverless request body limits are strict; fail early with clear guidance.
+      // Do not enforce this in desktop runtime (Electron packaged app also runs in production mode).
+      const isDesktopRuntime = Boolean(process.env.DESKTOP_APP_LOG_PATH)
       const enforceUploadLimit =
         process.env.ENFORCE_WEB_UPLOAD_LIMIT === '1' ||
-        process.env.VERCEL === '1' ||
-        process.env.NODE_ENV === 'production'
+        (!isDesktopRuntime && process.env.VERCEL === '1')
       const maxPdfBytes = Number(process.env.MAX_WEB_PDF_BYTES || 4_000_000)
       const contentLengthRaw = request.headers.get('content-length')
       const contentLength = contentLengthRaw ? Number.parseInt(contentLengthRaw, 10) : NaN
