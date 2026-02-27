@@ -31,7 +31,7 @@ class DeepSeekConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("torch") is None or importlib.util.find_spec("transformers") is None:
-            return (True, "torch/transformers missing; using OCR fallback")
+            return (False, "torch/transformers missing")
         if self._cuda_available():
             return (True, f"official deepseek local runtime available: {self._preferred_model_id}")
         return (

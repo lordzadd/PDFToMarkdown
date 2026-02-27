@@ -24,7 +24,7 @@ class DoctrEuConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("doctr") is None:
-            return (True, "python-doctr missing; using OCR fallback")
+            return (False, "python-doctr missing")
         return (True, "local docTR (Mindee) runtime")
 
     def _load_predictor(self):

@@ -21,9 +21,14 @@ class DoclingConverter:
         }
 
     def is_available(self) -> tuple[bool, str | None]:
-        available = importlib.util.find_spec("docling") is not None
-        if not available:
-            return (True, "Docling runtime missing; using OCR fallback")
+        if importlib.util.find_spec("docling") is None:
+            return (False, "Docling runtime missing")
+        try:
+            from docling.document_converter import DocumentConverter  # type: ignore
+
+            _ = DocumentConverter
+        except Exception as exc:
+            return (False, f"Docling import failed: {exc}")
         return (True, None)
 
     def convert(self, pdf_path: str, options: dict[str, Any] | None = None) -> str:

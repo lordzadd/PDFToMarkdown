@@ -27,7 +27,7 @@ class EuroOcrConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("easyocr") is None:
-            return (True, "easyocr missing; using OCR fallback")
+            return (False, "easyocr missing")
         return (True, "local easyocr runtime")
 
     def _load_reader(self):

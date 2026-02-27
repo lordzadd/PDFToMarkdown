@@ -25,7 +25,7 @@ class PaddleOcrConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("paddleocr") is None:
-            return (True, "paddleocr missing; using OCR fallback")
+            return (False, "paddleocr missing")
         return (True, "local paddleocr runtime")
 
     def _load_ocr(self):

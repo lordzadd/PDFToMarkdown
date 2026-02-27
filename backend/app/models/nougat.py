@@ -25,14 +25,14 @@ class NougatConverter:
     def is_available(self) -> tuple[bool, str | None]:
         binary = shutil.which("nougat")
         if binary is None:
-            return (True, "Nougat CLI unavailable; using OCR fallback")
+            return (False, "Nougat CLI unavailable")
         try:
             proc = subprocess.run([binary, "--help"], capture_output=True, text=True, timeout=20)
             if proc.returncode == 0:
                 return (True, None)
-            return (True, "Nougat CLI not runnable; using OCR fallback")
+            return (False, "Nougat CLI not runnable")
         except Exception:
-            return (True, "Nougat CLI failed to start; using OCR fallback")
+            return (False, "Nougat CLI failed to start")
 
     def convert(self, pdf_path: str, options: dict[str, Any] | None = None) -> str:
         binary = shutil.which("nougat")

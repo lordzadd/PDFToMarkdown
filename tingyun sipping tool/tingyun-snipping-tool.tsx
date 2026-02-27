@@ -51,6 +51,13 @@ import { PDFDocument } from "pdf-lib"
 // Define the available models
 const PDF_MODELS = [
   {
+    id: "ocr-only",
+    name: "OCR-Only (Reliable)",
+    description: "Fast local OCR pipeline for screenshots, handwriting, and scanned text",
+    strengths: ["Screenshots", "Handwriting", "Scanned pages", "Fast fallback"],
+    processingTime: "Fast",
+  },
+  {
     id: "doctr-eu",
     name: "docTR (Europe)",
     description: "Mindee docTR local OCR model with layout-aware text extraction",
@@ -89,6 +96,13 @@ const PDF_MODELS = [
 
 // Model-specific processing settings
 const MODEL_SETTINGS = {
+  "ocr-only": {
+    defaultQuality: 80,
+    supportsEquations: false,
+    supportsTableDetection: false,
+    supportsSegmentation: false,
+    processingSteps: ["Image preprocessing", "OCR extraction", "Markdown formatting"],
+  },
   "doctr-eu": {
     defaultQuality: 90,
     supportsEquations: true,
@@ -181,6 +195,13 @@ interface ElectronDiagnostics {
   recentLogs: string[]
 }
 
+interface BackendModelInfo {
+  model_id: string
+  available: boolean
+  availability_note?: string | null
+  enabled: boolean
+}
+
 type PageLimitOption = "full" | "1" | "2" | "5" | "10" | "20"
 
 const TingyunSnippingTool = () => {
@@ -238,6 +259,7 @@ const TingyunSnippingTool = () => {
   const [conversionErrorDetails, setConversionErrorDetails] = useState<string | null>(null)
   const [lastDiagnostics, setLastDiagnostics] = useState<ElectronDiagnostics | null>(null)
   const [isHandwritingConverting, setIsHandwritingConverting] = useState(false)
+  const [backendModelInfo, setBackendModelInfo] = useState<Record<string, BackendModelInfo>>({})
 
   // Update quality level when model changes
   useEffect(() => {
@@ -260,6 +282,44 @@ const TingyunSnippingTool = () => {
     })
   }, [isElectron])
 
+  useEffect(() => {
+    let cancelled = false
+    const loadModels = async () => {
+      try {
+        const response = await fetch("/api/models")
+        if (!response.ok) return
+        const data = (await response.json()) as BackendModelInfo[]
+        if (cancelled || !Array.isArray(data)) return
+        const mapped: Record<string, BackendModelInfo> = {}
+        for (const item of data) {
+          if (item?.model_id) {
+            mapped[item.model_id] = item
+          }
+        }
+        setBackendModelInfo(mapped)
+      } catch (_) {
+        // keep static fallback behavior if model metadata is unavailable
+      }
+    }
+    void loadModels()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (Object.keys(backendModelInfo).length === 0) return
+    if (!isModelAvailable(selectedModel)) {
+      const fallbackModel = pickPreferredAvailableModel()
+      setSelectedModel(fallbackModel)
+      logInfo("Selected model unavailable in current runtime; switched model", {
+        from: selectedModel,
+        to: fallbackModel,
+        reason: backendModelInfo[selectedModel]?.availability_note || "unavailable",
+      })
+    }
+  }, [backendModelInfo, selectedModel])
+
   const logInfo = (message: string, meta: Record<string, unknown> = {}) => {
     if (isElectron && window.electron?.logger?.info) {
       window.electron.logger.info(message, meta)
@@ -274,6 +334,22 @@ const TingyunSnippingTool = () => {
     } else {
       console.error(message, meta)
     }
+  }
+
+  const isModelAvailable = (modelId: string): boolean => {
+    const info = backendModelInfo[modelId]
+    if (!info) return true
+    return Boolean(info.enabled && info.available)
+  }
+
+  const pickPreferredAvailableModel = (): string => {
+    const preferenceOrder = ["docling", "markitdown", "layoutlm", "doctr-eu", "zerox", "ocr-only"]
+    for (const candidate of preferenceOrder) {
+      if (PDF_MODELS.some((m) => m.id === candidate) && isModelAvailable(candidate)) {
+        return candidate
+      }
+    }
+    return "ocr-only"
   }
 
   const resetConversionFeedback = () => {
@@ -1055,6 +1131,12 @@ const TingyunSnippingTool = () => {
 
   const runConversionForFile = async (file: File, opts: { autoSource?: string; modelId?: string } = {}) => {
     const modelForRun = opts.modelId ?? selectedModel
+    if (!isModelAvailable(modelForRun)) {
+      const note = backendModelInfo[modelForRun]?.availability_note
+      throw new Error(
+        `Model \`${modelForRun}\` is unavailable in this runtime${note ? `: ${note}` : ""}. Select an available model.`,
+      )
+    }
     resetConversionFeedback()
     setIsConverting(true)
     setConversionProgress(0)
@@ -1757,7 +1839,7 @@ const TingyunSnippingTool = () => {
               <div className="p-6 border-2 border-dashed rounded-lg border-gray-300 flex flex-col items-center gap-2 max-w-lg mx-auto">
                 <Upload size={32} className="text-gray-400" />
                 <p className="text-gray-500">Click the document icon in the toolbar to upload a PDF</p>
-                <p className="text-xs text-gray-400">Supported models: docTR (Europe), LayoutLM, MarkItDown, Docling, and ZeroX</p>
+                <p className="text-xs text-gray-400">Supported models: OCR-Only, docTR (Europe), LayoutLM, MarkItDown, Docling, and ZeroX</p>
                 {isElectron && (
                   <p className="text-xs text-purple-500 mt-1">Running in desktop mode with enhanced capabilities</p>
                 )}
@@ -1808,7 +1890,7 @@ const TingyunSnippingTool = () => {
                 <RadioGroup value={selectedModel} onValueChange={setSelectedModel}>
                   {PDF_MODELS.map((model) => (
                     <div key={model.id} className="flex items-start space-x-2 mb-3">
-                      <RadioGroupItem value={model.id} id={model.id} />
+                      <RadioGroupItem value={model.id} id={model.id} disabled={!isModelAvailable(model.id)} />
                       <div className="grid gap-1">
                         <div className="flex items-center gap-2">
                           <Label htmlFor={model.id} className="font-medium">
@@ -1820,8 +1902,14 @@ const TingyunSnippingTool = () => {
                           {model.id === "docling" && (
                             <span className="text-xs px-2 py-0.5 bg-purple-100 rounded-full text-purple-600">New</span>
                           )}
+                          {!isModelAvailable(model.id) && (
+                            <span className="text-xs px-2 py-0.5 bg-red-100 rounded-full text-red-700">Unavailable</span>
+                          )}
                         </div>
                         <p className="text-sm text-gray-500">{model.description}</p>
+                        {!isModelAvailable(model.id) && backendModelInfo[model.id]?.availability_note && (
+                          <p className="text-xs text-red-600">{backendModelInfo[model.id]?.availability_note}</p>
+                        )}
                         <div className="flex flex-wrap gap-1 mt-1">
                           {model.strengths.map((strength, index) => (
                             <span key={index} className="text-xs px-2 py-0.5 bg-purple-50 text-purple-600 rounded-full">
@@ -2038,11 +2126,19 @@ const TingyunSnippingTool = () => {
               <div key={model.id} className="rounded border border-gray-200 p-3">
                 <div className="flex items-center justify-between">
                   <p className="font-medium text-sm">{model.name}</p>
-                  <span className="text-xs px-2 py-0.5 bg-gray-100 rounded-full text-gray-600">
-                    {model.processingTime}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {!isModelAvailable(model.id) && (
+                      <span className="text-xs px-2 py-0.5 bg-red-100 rounded-full text-red-700">Unavailable</span>
+                    )}
+                    <span className="text-xs px-2 py-0.5 bg-gray-100 rounded-full text-gray-600">
+                      {model.processingTime}
+                    </span>
+                  </div>
                 </div>
                 <p className="text-xs text-gray-500 mt-1">{model.description}</p>
+                {!isModelAvailable(model.id) && backendModelInfo[model.id]?.availability_note && (
+                  <p className="text-xs text-red-600 mt-1">{backendModelInfo[model.id]?.availability_note}</p>
+                )}
                 <div className="flex flex-wrap gap-1 mt-2">
                   {model.strengths.map((strength) => (
                     <span key={`${model.id}-${strength}`} className="text-xs px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full">

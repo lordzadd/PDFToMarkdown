@@ -26,9 +26,9 @@ class ZeroXConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("pyzerox") is None:
-            return (True, "py-zerox missing; using OCR fallback")
+            return (False, "py-zerox missing")
         if not os.getenv("OPENAI_API_KEY"):
-            return (True, "OPENAI_API_KEY missing for py-zerox; using OCR fallback")
+            return (False, "OPENAI_API_KEY missing for py-zerox")
         return (True, "py-zerox runtime")
 
     def _limited_pdf(self, pdf_path: str, max_pages: int | None) -> tuple[str, str | None]:

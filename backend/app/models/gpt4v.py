@@ -26,9 +26,9 @@ class GPT4VConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("openai") is None:
-            return (True, "OpenAI package missing; using OCR fallback")
+            return (False, "OpenAI package missing")
         if not os.getenv("OPENAI_API_KEY"):
-            return (True, "OPENAI_API_KEY missing; using OCR fallback")
+            return (False, "OPENAI_API_KEY missing")
         return (True, None)
 
     def convert(self, pdf_path: str, options: dict[str, Any] | None = None) -> str:

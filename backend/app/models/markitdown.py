@@ -25,7 +25,13 @@ class MarkItDownConverter:
 
     def is_available(self) -> tuple[bool, str | None]:
         if importlib.util.find_spec("markitdown") is None:
-            return (True, "markitdown missing; using OCR fallback")
+            return (False, "markitdown missing")
+        try:
+            from markitdown import MarkItDown  # type: ignore
+
+            _ = MarkItDown
+        except Exception as exc:
+            return (False, f"markitdown import failed: {exc}")
         return (True, "local markitdown runtime")
 
     def _limited_pdf(self, pdf_path: str, max_pages: int | None) -> tuple[str, str | None, str | None]:
