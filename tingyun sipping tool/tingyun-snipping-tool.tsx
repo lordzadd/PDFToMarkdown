@@ -255,6 +255,7 @@ const TingyunSnippingTool = () => {
   const [screenSources, setScreenSources] = useState<any[]>([])
   const [selectedScreenSource, setSelectedScreenSource] = useState<string | null>(null)
   const [screenAccessStatus, setScreenAccessStatus] = useState<string>("unknown")
+  const [electronPlatform, setElectronPlatform] = useState<string>("")
   const [conversionError, setConversionError] = useState<string | null>(null)
   const [conversionErrorDetails, setConversionErrorDetails] = useState<string | null>(null)
   const [lastDiagnostics, setLastDiagnostics] = useState<ElectronDiagnostics | null>(null)
@@ -280,6 +281,18 @@ const TingyunSnippingTool = () => {
         logPath: diagnostics.logPath,
       })
     })
+  }, [isElectron])
+
+  useEffect(() => {
+    if (!isElectron || !window.electron?.system?.getPlatform) return
+    window.electron.system
+      .getPlatform()
+      .then((platform) => {
+        setElectronPlatform(platform || "")
+      })
+      .catch(() => {
+        setElectronPlatform("")
+      })
   }, [isElectron])
 
   useEffect(() => {
@@ -597,9 +610,28 @@ const TingyunSnippingTool = () => {
 
   const handleScreenSnip = async () => {
     if (isElectron) {
-      // Default to native capture in desktop mode to avoid repeated macOS TCC prompts
-      // that can occur with desktop source enumeration in unsigned/ad-hoc builds.
-      await handleSystemScreenCapture()
+      if (electronPlatform === "darwin") {
+        // On macOS prefer native screencapture for stability and permission behavior.
+        await handleSystemScreenCapture()
+        return
+      }
+
+      try {
+        const sources = (await window.electron?.screenCapture?.getSources?.()) || []
+        const status = (await window.electron?.screenCapture?.getPermissionStatus?.()) || "unknown"
+        setScreenAccessStatus(status)
+        setScreenSources(sources)
+
+        if (sources.length > 0) {
+          setIsScreenSourcesDialogOpen(true)
+          return
+        }
+        alert(`No screen sources available (status: ${status}).`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown screen source error"
+        logError("Failed to load screen sources for capture", { message })
+        alert(`Failed to list screen sources: ${message}`)
+      }
     } else {
       setIsScreenSnippingMode(true)
       setIsSelectionMode(false)
@@ -2326,12 +2358,16 @@ const TingyunSnippingTool = () => {
                 </p>
                 {isElectron && (
                   <div className="flex items-center justify-center gap-2">
-                    <Button variant="default" size="sm" onClick={handleSystemScreenCapture}>
-                      Use System Screen Picker
-                    </Button>
-                    <Button variant="outline" size="sm" onClick={handleOpenScreenPermissionSettings}>
-                      Open Screen Recording Settings
-                    </Button>
+                    {electronPlatform === "darwin" && (
+                      <Button variant="default" size="sm" onClick={handleSystemScreenCapture}>
+                        Use System Screen Picker
+                      </Button>
+                    )}
+                    {electronPlatform === "darwin" && (
+                      <Button variant="outline" size="sm" onClick={handleOpenScreenPermissionSettings}>
+                        Open Screen Recording Settings
+                      </Button>
+                    )}
                     <Button variant="ghost" size="sm" onClick={handleScreenSnip}>
                       Retry
                     </Button>

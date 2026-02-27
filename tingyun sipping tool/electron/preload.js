@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("electron", {
   windowControls: {
     minimize: () => ipcRenderer.send("minimize-window"),
     maximize: () => ipcRenderer.send("maximize-window"),
+    restore: () => ipcRenderer.send("restore-window"),
     close: () => ipcRenderer.send("close-window"),
   },
 
@@ -28,7 +29,13 @@ contextBridge.exposeInMainWorld("electron", {
 
   diagnostics: {
     get: () => ipcRenderer.invoke("get-diagnostics"),
+    ensureBackendReady: () => ipcRenderer.invoke("ensure-backend-ready"),
     openLogDirectory: () => ipcRenderer.invoke("open-log-directory"),
+    writeDebugCapture: (payload) => ipcRenderer.invoke("write-debug-capture", payload),
+  },
+
+  system: {
+    getPlatform: () => ipcRenderer.invoke("get-platform"),
   },
 
   logger: {

@@ -6,6 +6,7 @@ export interface IElectronAPI {
   windowControls: {
     minimize: () => void;
     maximize: () => void;
+    restore: () => void;
     close: () => void;
   };
   screenCapture: {
@@ -24,12 +25,30 @@ export interface IElectronAPI {
       logPath: string;
       recentLogs: string[];
     }>;
+    ensureBackendReady: () => Promise<{
+      ok: boolean;
+      backendBaseUrl: string | null;
+      backendLastError: string | null;
+    }>;
+    writeDebugCapture: (payload: {
+      prefix?: string;
+      imageBase64?: string;
+      pdfBase64?: string;
+    }) => Promise<{
+      ok: boolean;
+      imagePath?: string | null;
+      pdfPath?: string | null;
+      error?: string;
+    }>;
     openLogDirectory: () => Promise<string>;
   };
   logger: {
     info: (message: string, meta?: Record<string, unknown>) => void;
     warn: (message: string, meta?: Record<string, unknown>) => void;
     error: (message: string, meta?: Record<string, unknown>) => void;
+  };
+  system: {
+    getPlatform: () => Promise<string>;
   };
 }
 

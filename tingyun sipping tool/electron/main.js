@@ -47,6 +47,32 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function withMainWindowTemporarilyHidden(task) {
+  const windowRef = mainWindow
+  const shouldRestoreWindow = Boolean(windowRef && !windowRef.isDestroyed() && !windowRef.isMinimized())
+  try {
+    if (shouldRestoreWindow) {
+      try {
+        windowRef.minimize()
+        await sleep(220)
+      } catch (_) {
+        // ignore minimize errors
+      }
+    }
+    return await task()
+  } finally {
+    if (shouldRestoreWindow && windowRef && !windowRef.isDestroyed()) {
+      try {
+        windowRef.restore()
+        windowRef.show()
+        windowRef.focus()
+      } catch (_) {
+        // ignore restore errors
+      }
+    }
+  }
+}
+
 async function isBackendHealthy(baseUrl) {
   try {
     const controller = new AbortController()
@@ -702,6 +728,7 @@ ipcMain.handle("get-screen-sources", async () => {
       id: source.id,
       name: source.name,
       thumbnail: source.thumbnail.toDataURL(),
+      displayId: source.display_id || source.displayId || "",
     }))
     writeLog("info", "Fetched screen sources", { count: mapped.length })
     return mapped
@@ -711,6 +738,8 @@ ipcMain.handle("get-screen-sources", async () => {
     return []
   }
 })
+
+ipcMain.handle("get-platform", () => process.platform)
 
 ipcMain.handle("get-screen-access-status", () => {
   if (process.platform !== "darwin") {
@@ -732,12 +761,14 @@ ipcMain.handle("open-screen-permission-settings", async () => {
 
 ipcMain.handle("capture-screen", async (event, sourceId) => {
   try {
-    const sources = await desktopCapturer.getSources({
-      types: ["screen", "window"],
-      thumbnailSize: { width: 1920, height: 1080 },
+    return await withMainWindowTemporarilyHidden(async () => {
+      const sources = await desktopCapturer.getSources({
+        types: ["screen", "window"],
+        thumbnailSize: { width: 1920, height: 1080 },
+      })
+      const selectedSource = sources.find((source) => source.id === sourceId)
+      return selectedSource ? selectedSource.thumbnail.toDataURL() : null
     })
-    const selectedSource = sources.find((source) => source.id === sourceId)
-    return selectedSource ? selectedSource.thumbnail.toDataURL() : null
   } catch (error) {
     writeLog("error", "capture-screen failed", { sourceId, error: String(error) })
     throw error
@@ -746,23 +777,25 @@ ipcMain.handle("capture-screen", async (event, sourceId) => {
 
 ipcMain.handle("capture-screen-area", async (event, bounds) => {
   try {
-    const { x, y, width, height } = bounds
-    const sources = await desktopCapturer.getSources({
-      types: ["screen"],
-      thumbnailSize: { width: width * 2, height: height * 2 }, // Higher resolution for better quality
-    })
+    return await withMainWindowTemporarilyHidden(async () => {
+      const { x, y, width, height } = bounds
+      const sources = await desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: { width: width * 2, height: height * 2 }, // Higher resolution for better quality
+      })
 
-    if (sources.length === 0) return null
+      if (sources.length === 0) return null
 
-    // Crop directly from nativeImage in main process.
-    const screenshot = sources[0].thumbnail
-    const cropped = screenshot.crop({
-      x: Math.max(0, Math.floor(x * 2)),
-      y: Math.max(0, Math.floor(y * 2)),
-      width: Math.max(1, Math.floor(width * 2)),
-      height: Math.max(1, Math.floor(height * 2)),
+      // Crop directly from nativeImage in main process.
+      const screenshot = sources[0].thumbnail
+      const cropped = screenshot.crop({
+        x: Math.max(0, Math.floor(x * 2)),
+        y: Math.max(0, Math.floor(y * 2)),
+        width: Math.max(1, Math.floor(width * 2)),
+        height: Math.max(1, Math.floor(height * 2)),
+      })
+      return cropped.toDataURL()
     })
-    return cropped.toDataURL()
   } catch (error) {
     writeLog("error", "capture-screen-area failed", { bounds, error: String(error) })
     throw error
@@ -775,32 +808,24 @@ ipcMain.handle("capture-screen-system", async () => {
   }
 
   const tmpPath = path.join(app.getPath("temp"), `tingyun-system-capture-${Date.now()}.png`)
-  const windowRef = mainWindow
-  const shouldRestoreWindow = Boolean(windowRef && !windowRef.isDestroyed() && !windowRef.isMinimized())
   try {
-    if (shouldRestoreWindow) {
-      try {
-        windowRef.minimize()
-        await sleep(220)
-      } catch (_) {
-        // ignore minimize errors and continue capture
-      }
-    }
-
-    const ok = await new Promise((resolve, reject) => {
-      execFile("screencapture", ["-i", "-x", tmpPath], (error) => {
-        if (error) {
-          // Exit code 1 is cancel in screencapture interactive flow.
-          if (typeof error.code === "number" && error.code === 1) {
-            resolve(false)
-            return
-          }
-          reject(error)
-          return
-        }
-        resolve(true)
-      })
-    })
+    const ok = await withMainWindowTemporarilyHidden(
+      () =>
+        new Promise((resolve, reject) => {
+          execFile("screencapture", ["-i", "-x", tmpPath], (error) => {
+            if (error) {
+              // Exit code 1 is cancel in screencapture interactive flow.
+              if (typeof error.code === "number" && error.code === 1) {
+                resolve(false)
+                return
+              }
+              reject(error)
+              return
+            }
+            resolve(true)
+          })
+        }),
+    )
 
     if (!ok || !fs.existsSync(tmpPath)) {
       return null
@@ -812,15 +837,6 @@ ipcMain.handle("capture-screen-system", async () => {
     writeLog("error", "capture-screen-system failed", { error: String(error) })
     throw error
   } finally {
-    if (shouldRestoreWindow && windowRef && !windowRef.isDestroyed()) {
-      try {
-        windowRef.restore()
-        windowRef.show()
-        windowRef.focus()
-      } catch (_) {
-        // ignore restore errors
-      }
-    }
     try {
       if (fs.existsSync(tmpPath)) {
         fs.unlinkSync(tmpPath)
