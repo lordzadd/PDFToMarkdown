@@ -301,6 +301,47 @@ const TingyunSnippingTool = () => {
     setConversionErrorDetails(null)
   }
 
+  const resetLoadedDocumentState = () => {
+    setShowResult(false)
+    resetConversionFeedback()
+    setMarkdownResult("")
+    setLatexResult("")
+    setDocumentSegments([])
+    setActiveSegment(null)
+  }
+
+  const convertImageFileToPdfFile = async (imageFile: File, outputName: string): Promise<File> => {
+    const imageBytes = await imageFile.arrayBuffer()
+    const pdf = await PDFDocument.create()
+    const mime = (imageFile.type || "").toLowerCase()
+
+    let embeddedImage
+    if (mime.includes("png")) {
+      embeddedImage = await pdf.embedPng(imageBytes)
+    } else if (mime.includes("jpg") || mime.includes("jpeg")) {
+      embeddedImage = await pdf.embedJpg(imageBytes)
+    } else {
+      throw new Error(`Unsupported screenshot format: ${imageFile.type || "unknown"}`)
+    }
+
+    const page = pdf.addPage([embeddedImage.width, embeddedImage.height])
+    page.drawImage(embeddedImage, {
+      x: 0,
+      y: 0,
+      width: embeddedImage.width,
+      height: embeddedImage.height,
+    })
+
+    const pdfBytes = await pdf.save()
+    return new File([pdfBytes], outputName, { type: "application/pdf" })
+  }
+
+  const setActivePdfInput = (file: File, path: string | null = null) => {
+    setPdfFile(file)
+    setPdfFilePath(path)
+    resetLoadedDocumentState()
+  }
+
   // Initialize canvas when handwriting mode is activated
   useEffect(() => {
     if (isHandwritingMode && canvasRef.current) {
@@ -373,14 +414,7 @@ const TingyunSnippingTool = () => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0]
       if (file.type === "application/pdf") {
-        setPdfFile(file)
-        setPdfFilePath(null) // Reset file path since this is from browser input
-        setShowResult(false) // Reset the result view
-        resetConversionFeedback()
-        setMarkdownResult("") // Clear any previous results
-        setLatexResult("") // Clear any previous LaTeX results
-        setDocumentSegments([]) // Clear any previous segments
-        setActiveSegment(null) // Reset active segment
+        setActivePdfInput(file)
         logInfo("Loaded PDF from browser file input", { fileName: file.name, size: file.size })
 
         // Add to history
@@ -420,14 +454,7 @@ const TingyunSnippingTool = () => {
 
         const file = new File([buffer], name, { type: "application/pdf" })
 
-        setPdfFile(file)
-        setPdfFilePath(path)
-        setShowResult(false)
-        resetConversionFeedback()
-        setMarkdownResult("")
-        setLatexResult("")
-        setDocumentSegments([])
-        setActiveSegment(null)
+        setActivePdfInput(file, path)
         logInfo("Opened PDF in Electron", { path, name })
 
         // Add to history
@@ -464,16 +491,22 @@ const TingyunSnippingTool = () => {
     requestAnimationFrame(() => setIsHistoryOpen(true))
   }
 
-  const handleHistoryItemClick = (item: UploadHistory) => {
+  const handleHistoryItemClick = async (item: UploadHistory) => {
     if (item.type === "pdf" && item.content instanceof File) {
-      setPdfFile(item.content)
-      setPdfFilePath(item.path || null)
-      setShowResult(false)
-      setDocumentSegments([]) // Clear any previous segments
-      setActiveSegment(null) // Reset active segment
+      setActivePdfInput(item.content, item.path || null)
     } else if (item.type === "pdf") {
       // For sample data without actual file content
       alert(`This would load ${item.name} (sample data)`)
+    } else if (item.type === "image" && item.content instanceof File) {
+      try {
+        const stem = item.name.replace(/\.[^.]+$/, "") || "screenshot"
+        const pdfFromImage = await convertImageFileToPdfFile(item.content, `${stem}.pdf`)
+        setActivePdfInput(pdfFromImage, item.path || null)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown image load error"
+        logError("Failed to load image history item for OCR", { message, itemName: item.name })
+        alert(`Unable to load screenshot for OCR: ${message}`)
+      }
     }
     setIsHistoryOpen(false)
   }
@@ -498,15 +531,25 @@ const TingyunSnippingTool = () => {
   const addCapturedImageToHistory = async (imageData: string, name = "Screenshot") => {
     const response = await fetch(imageData)
     const blob = await response.blob()
-    const file = new File([blob], `${name.toLowerCase().replace(/\s+/g, "-")}.png`, { type: "image/png" })
+    const safeStem = name.toLowerCase().replace(/\s+/g, "-")
+    const imageFile = new File([blob], `${safeStem}.png`, { type: "image/png" })
     const newUpload: UploadHistory = {
       id: Date.now(),
       name,
       date: new Date().toISOString().split("T")[0],
       type: "image",
-      content: file,
+      content: imageFile,
     }
     setUploadHistory((prev) => [newUpload, ...prev])
+
+    const pdfFileFromImage = await convertImageFileToPdfFile(imageFile, `${safeStem}.pdf`)
+    setActivePdfInput(pdfFileFromImage)
+    logInfo("Loaded captured screenshot as active PDF input", {
+      imageName: imageFile.name,
+      pdfName: pdfFileFromImage.name,
+      imageBytes: imageFile.size,
+      pdfBytes: pdfFileFromImage.size,
+    })
   }
 
   const handleSystemScreenCapture = async () => {
@@ -602,25 +645,8 @@ const TingyunSnippingTool = () => {
     try {
       const imageData = await window.electron.screenCapture.captureScreen(sourceId)
       if (imageData) {
-        // Convert base64 to File object
-        const response = await fetch(imageData)
-        const blob = await response.blob()
-        const file = new File([blob], 'screenshot.png', { type: 'image/png' })
-
-        // Add to history
-        const newUpload: UploadHistory = {
-          id: Date.now(),
-          name: 'Screenshot',
-          date: new Date().toISOString().split('T')[0],
-          type: 'image',
-          content: file
-        }
-
-        setUploadHistory(prev => [newUpload, ...prev])
+        await addCapturedImageToHistory(imageData, "Screenshot")
         logInfo("Captured screenshot from source", { sourceId })
-        
-        // Process the image if needed
-        // You can add OCR processing here
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown capture error"
@@ -668,24 +694,7 @@ const TingyunSnippingTool = () => {
         try {
           const imageData = await window.electron.screenCapture.captureScreenArea(selectedArea)
           if (imageData) {
-            // Convert base64 to File object
-            const response = await fetch(imageData)
-            const blob = await response.blob()
-            const file = new File([blob], 'screen-area.png', { type: 'image/png' })
-
-            // Add to history
-            const newUpload: UploadHistory = {
-              id: Date.now(),
-              name: 'Screen Area',
-              date: new Date().toISOString().split('T')[0],
-              type: 'image',
-              content: file
-            }
-
-            setUploadHistory(prev => [newUpload, ...prev])
-            
-            // Process the image if needed
-            // You can add OCR processing here
+            await addCapturedImageToHistory(imageData, "Screen Area")
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unknown capture area error"
