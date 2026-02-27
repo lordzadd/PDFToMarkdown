@@ -51,13 +51,6 @@ import { PDFDocument } from "pdf-lib"
 // Define the available models
 const PDF_MODELS = [
   {
-    id: "paddleocr",
-    name: "PaddleOCR (China)",
-    description: "PaddleOCR local model for multilingual OCR and document text extraction",
-    strengths: ["Academic papers", "Mathematical formulas", "Tables", "Figures"],
-    processingTime: "Medium",
-  },
-  {
     id: "doctr-eu",
     name: "docTR (Europe)",
     description: "Mindee docTR local OCR model with layout-aware text extraction",
@@ -96,19 +89,6 @@ const PDF_MODELS = [
 
 // Model-specific processing settings
 const MODEL_SETTINGS = {
-  paddleocr: {
-    defaultQuality: 80,
-    supportsEquations: true,
-    supportsTableDetection: true,
-    supportsSegmentation: false,
-    processingSteps: [
-      "Document analysis",
-      "Layout detection",
-      "OCR processing",
-      "Math formula recognition",
-      "Markdown conversion",
-    ],
-  },
   "doctr-eu": {
     defaultQuality: 90,
     supportsEquations: true,
@@ -208,7 +188,7 @@ const TingyunSnippingTool = () => {
   const [activeTab, setActiveTab] = useState("latex")
   const [isHandwritingMode, setIsHandwritingMode] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [selectedModel, setSelectedModel] = useState("paddleocr")
+  const [selectedModel, setSelectedModel] = useState("markitdown")
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [pdfFilePath, setPdfFilePath] = useState<string | null>(null)
   const [isConverting, setIsConverting] = useState(false)
@@ -551,7 +531,7 @@ const TingyunSnippingTool = () => {
       pdfBytes: pdfFileFromImage.size,
     })
 
-    await runConversionForFile(pdfFileFromImage, { autoSource: "screenshot-capture" })
+    await runConversionForFile(pdfFileFromImage, { autoSource: "screenshot-capture", modelId: "ocr-only" })
   }
 
   const handleSystemScreenCapture = async () => {
@@ -1073,7 +1053,8 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const runConversionForFile = async (file: File, opts: { autoSource?: string } = {}) => {
+  const runConversionForFile = async (file: File, opts: { autoSource?: string; modelId?: string } = {}) => {
+    const modelForRun = opts.modelId ?? selectedModel
     resetConversionFeedback()
     setIsConverting(true)
     setConversionProgress(0)
@@ -1081,20 +1062,11 @@ const TingyunSnippingTool = () => {
     setCurrentStep("Initializing...")
     setExecutionMeta(null)
     if (opts.autoSource) {
-      logInfo("Auto conversion triggered", { source: opts.autoSource, fileName: file.name, model: selectedModel })
+      logInfo("Auto conversion triggered", { source: opts.autoSource, fileName: file.name, model: modelForRun })
     }
 
     try {
-      let result = await runModelConversion(selectedModel, file)
-
-      // Apply quality settings
-      if (qualityLevel < 50) {
-        // Simulate lower quality by introducing errors
-        result = result.replace(/\b(\w{7,})\b/g, (match: string) => {
-          const shouldReplace = Math.random() < 0.3
-          return shouldReplace ? match.slice(0, -1) + "?" : match
-        })
-      }
+      let result = await runModelConversion(modelForRun, file)
 
       // Handle table preservation setting
       if (!preserveTables && result.includes("| ")) {
@@ -1126,7 +1098,7 @@ const TingyunSnippingTool = () => {
       logError("Conversion failed", {
         message,
         diagnostics,
-        model: selectedModel,
+        model: modelForRun,
       })
       setIsConverting(false)
       setCurrentStep("Failed")
@@ -1785,7 +1757,7 @@ const TingyunSnippingTool = () => {
               <div className="p-6 border-2 border-dashed rounded-lg border-gray-300 flex flex-col items-center gap-2 max-w-lg mx-auto">
                 <Upload size={32} className="text-gray-400" />
                 <p className="text-gray-500">Click the document icon in the toolbar to upload a PDF</p>
-                <p className="text-xs text-gray-400">Supported models: PaddleOCR, docTR (Europe), LayoutLM, MarkItDown, Docling, and ZeroX</p>
+                <p className="text-xs text-gray-400">Supported models: docTR (Europe), LayoutLM, MarkItDown, Docling, and ZeroX</p>
                 {isElectron && (
                   <p className="text-xs text-purple-500 mt-1">Running in desktop mode with enhanced capabilities</p>
                 )}
@@ -1808,7 +1780,7 @@ const TingyunSnippingTool = () => {
 
       {/* Settings Dialog */}
       <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Image
@@ -1823,14 +1795,14 @@ const TingyunSnippingTool = () => {
             <DialogDescription>Configure your PDF to Markdown conversion settings</DialogDescription>
           </DialogHeader>
 
-          <TabsComponent defaultValue="models">
-            <TabsListComponent className="grid grid-cols-3">
+          <TabsComponent defaultValue="models" className="flex flex-col min-h-0 flex-1">
+            <TabsListComponent className="grid grid-cols-3 shrink-0">
               <TabsTriggerComponent value="models">Models</TabsTriggerComponent>
               <TabsTriggerComponent value="quality">Quality</TabsTriggerComponent>
               <TabsTriggerComponent value="segmentation">Segmentation</TabsTriggerComponent>
             </TabsListComponent>
 
-            <TabsContent value="models" className="py-4">
+            <TabsContent value="models" className="py-4 max-h-[52vh] overflow-y-auto">
               <div>
                 <h3 className="text-sm font-medium mb-3">PDF to Markdown Model</h3>
                 <RadioGroup value={selectedModel} onValueChange={setSelectedModel}>
@@ -1864,7 +1836,7 @@ const TingyunSnippingTool = () => {
               </div>
             </TabsContent>
 
-            <TabsContent value="quality" className="py-4">
+            <TabsContent value="quality" className="py-4 max-h-[52vh] overflow-y-auto">
               <div>
                 <div className="flex justify-between items-center mb-2">
                   <h3 className="text-sm font-medium">Quality Level</h3>
@@ -1943,7 +1915,7 @@ const TingyunSnippingTool = () => {
               </div>
             </TabsContent>
 
-            <TabsContent value="segmentation" className="py-4">
+            <TabsContent value="segmentation" className="py-4 max-h-[52vh] overflow-y-auto">
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium">Document Segmentation</h3>
@@ -2038,7 +2010,7 @@ const TingyunSnippingTool = () => {
             </TabsContent>
           </TabsComponent>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end pt-2 shrink-0">
             <Button
               onClick={() => setIsSettingsOpen(false)}
               className="flex items-center gap-1 bg-purple-500 hover:bg-purple-600 text-white"

@@ -4,19 +4,28 @@ from typing import Any
 
 import fitz
 import pytesseract
+from PIL import Image, ImageOps
 
 from .base import ModelDefinition
 from .common import apply_common_options, get_max_pages, render_pdf_images
 
 
 class OcrOnlyConverter:
+    def _preprocess_for_ocr(self, image: Image.Image) -> Image.Image:
+        gray = image.convert("L")
+        enhanced = ImageOps.autocontrast(gray)
+        resampling = getattr(Image, "Resampling", Image)
+        upscaled = enhanced.resize((enhanced.width * 2, enhanced.height * 2), resampling.BICUBIC)
+        bw = upscaled.point(lambda p: 0 if p < 185 else 255, mode="1")
+        return bw.convert("L")
+
     def convert(self, pdf_path: str, options: dict[str, Any] | None = None) -> str:
         max_pages = get_max_pages(options)
         pages_output = []
         with fitz.open(pdf_path) as doc:
             total_pages = len(doc)
             limit = min(total_pages, max_pages) if max_pages else total_pages
-            images = render_pdf_images(pdf_path, max_pages=limit, dpi=300)
+            images = render_pdf_images(pdf_path, max_pages=limit, dpi=220)
             for page_num in range(1, limit + 1):
                 page_text = self._ocr_page(images, doc, page_num)
                 page_text = page_text.strip() or "*No text detected on this page.*"
@@ -35,9 +44,15 @@ class OcrOnlyConverter:
 
         image = images[page_number - 1]
         try:
-            text = pytesseract.image_to_string(image)
-            if text.strip():
-                return text
+            best_text = ""
+            candidates = [self._preprocess_for_ocr(image), image]
+            for candidate in candidates:
+                for config in ("--oem 3 --psm 6", "--oem 3 --psm 11", "--oem 1 --psm 6"):
+                    text = pytesseract.image_to_string(candidate, lang="eng", config=config)
+                    if len(text.strip()) > len(best_text.strip()):
+                        best_text = text
+            if best_text.strip():
+                return best_text
         except Exception:
             pass
 
