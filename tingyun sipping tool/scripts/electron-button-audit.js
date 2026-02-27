@@ -3,13 +3,15 @@
 const { spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
+const net = require('net')
 const { _electron: electron } = require('playwright')
 
 const APP_DIR = path.resolve(__dirname, '..')
-const FASTAPI_PORT = process.env.FASTAPI_PORT || '8014'
-const FRONTEND_PORT = process.env.FRONTEND_PORT || '3000'
-const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || `http://127.0.0.1:${FASTAPI_PORT}`
-const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`
+const DEFAULT_FASTAPI_PORT = Number(process.env.FASTAPI_PORT || 8014)
+const DEFAULT_FRONTEND_PORT = Number(process.env.FRONTEND_PORT || 3000)
+let FASTAPI_PORT = String(DEFAULT_FASTAPI_PORT)
+let FRONTEND_PORT = String(DEFAULT_FRONTEND_PORT)
+let FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || `http://127.0.0.1:${FASTAPI_PORT}`
 const PDF_PATH = process.env.E2E_PDF_PATH || '/Users/ritviksharma/Downloads/Memoire-JMBorello-1.pdf'
 const OUT_DIR = path.join(APP_DIR, 'output', 'electron-button-audit')
 const SAVE_DIR = path.join(OUT_DIR, 'downloads')
@@ -26,12 +28,55 @@ function startProcess(name, cmd, args, extraEnv = {}) {
   return child
 }
 
+function waitForExit(child, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    if (!child || child.exitCode !== null) {
+      resolve()
+      return
+    }
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    child.once('exit', finish)
+    setTimeout(() => {
+      if (done || child.exitCode !== null) {
+        finish()
+        return
+      }
+      try {
+        child.kill('SIGKILL')
+      } catch (_) {}
+      finish()
+    }, timeoutMs)
+  })
+}
+
 function cleanupPorts() {
   const cleaner = spawn('bash', ['-lc', `lsof -tiTCP:${FASTAPI_PORT} -sTCP:LISTEN | xargs -I{} kill -9 {} 2>/dev/null || true; lsof -tiTCP:${FRONTEND_PORT} -sTCP:LISTEN | xargs -I{} kill -9 {} 2>/dev/null || true`], {
     cwd: APP_DIR,
     stdio: 'ignore',
   })
   return new Promise((resolve) => cleaner.on('exit', () => resolve()))
+}
+
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', () => resolve(false))
+    server.once('listening', () => server.close(() => resolve(true)))
+    server.listen(port, '127.0.0.1')
+  })
+}
+
+async function pickPort(startPort, maxChecks = 25) {
+  for (let offset = 0; offset < maxChecks; offset += 1) {
+    const candidate = startPort + offset
+    if (await isPortFree(candidate)) return candidate
+  }
+  throw new Error(`Unable to find a free port starting from ${startPort}`)
 }
 
 async function waitForUrl(url, timeoutMs = 120000) {
@@ -74,6 +119,15 @@ async function closeOpenDialogIfAny(page) {
 }
 
 async function run() {
+  if (!process.env.FASTAPI_PORT && !process.env.FASTAPI_BASE_URL) {
+    FASTAPI_PORT = String(await pickPort(DEFAULT_FASTAPI_PORT))
+    FASTAPI_BASE_URL = `http://127.0.0.1:${FASTAPI_PORT}`
+  }
+  if (!process.env.FRONTEND_PORT) {
+    FRONTEND_PORT = String(await pickPort(DEFAULT_FRONTEND_PORT))
+  }
+
+  const FRONTEND_URL = `http://127.0.0.1:${FRONTEND_PORT}`
   fs.mkdirSync(SAVE_DIR, { recursive: true })
   await cleanupPorts()
 
@@ -82,8 +136,12 @@ async function run() {
 
   const stop = async () => {
     for (const p of [backend, frontend]) {
-      if (p && !p.killed) p.kill('SIGTERM')
+      if (!p || p.exitCode !== null) continue
+      try {
+        p.kill('SIGTERM')
+      } catch (_) {}
     }
+    await Promise.all([waitForExit(backend), waitForExit(frontend)])
   }
 
   const report = {
@@ -100,11 +158,12 @@ async function run() {
     report.failures.push({ name, error: msg })
   }
 
+  let app = null
   try {
     await waitForUrl(`${FASTAPI_BASE_URL}/health`)
     await waitForUrl(FRONTEND_URL)
 
-    const app = await electron.launch({
+    app = await electron.launch({
       args: ['.'],
       cwd: APP_DIR,
       env: {
@@ -252,16 +311,28 @@ async function run() {
 
     fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2))
 
-    await app.close().catch(() => {})
+    await Promise.race([
+      app.close().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ])
     await stop()
 
     fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2))
     console.log(`Wrote report: ${REPORT_PATH}`)
 
-    if (report.failures.length) process.exitCode = 1
+    if (report.failures.length) {
+      process.exit(1)
+    }
+    process.exit(0)
   } catch (e) {
     fail('fatal', e)
     fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2))
+    if (app) {
+      await Promise.race([
+        app.close().catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ])
+    }
     await stop()
     process.exit(1)
   }

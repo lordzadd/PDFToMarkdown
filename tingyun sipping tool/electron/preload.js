@@ -22,7 +22,8 @@ contextBridge.exposeInMainWorld("electron", {
     getPermissionStatus: () => ipcRenderer.invoke("get-screen-access-status"),
     openPermissionSettings: () => ipcRenderer.invoke("open-screen-permission-settings"),
     captureScreen: (sourceId) => ipcRenderer.invoke("capture-screen", sourceId),
-    captureScreenArea: (bounds) => ipcRenderer.invoke("capture-screen-area", bounds)
+    captureScreenArea: (bounds) => ipcRenderer.invoke("capture-screen-area", bounds),
+    captureWithSystemTool: () => ipcRenderer.invoke("capture-screen-system"),
   },
 
   diagnostics: {

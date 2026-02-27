@@ -504,7 +504,22 @@ const TingyunSnippingTool = () => {
     await window.electron.screenCapture.openPermissionSettings()
   }
 
+  const addCapturedImageToHistory = async (imageData: string, name = "Screenshot") => {
+    const response = await fetch(imageData)
+    const blob = await response.blob()
+    const file = new File([blob], `${name.toLowerCase().replace(/\s+/g, "-")}.png`, { type: "image/png" })
+    const newUpload: UploadHistory = {
+      id: Date.now(),
+      name,
+      date: new Date().toISOString().split("T")[0],
+      type: "image",
+      content: file,
+    }
+    setUploadHistory((prev) => [newUpload, ...prev])
+  }
+
   const handleSystemScreenCapture = async () => {
+    let systemPickerError: string | null = null
     try {
       const mediaStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 1 },
@@ -532,26 +547,38 @@ const TingyunSnippingTool = () => {
       const imageData = canvas.toDataURL("image/png")
       videoTrack.stop()
       setIsScreenSourcesDialogOpen(false)
-
-      const response = await fetch(imageData)
-      const blob = await response.blob()
-      const file = new File([blob], "screenshot.png", { type: "image/png" })
-
-      const newUpload: UploadHistory = {
-        id: Date.now(),
-        name: "Screenshot",
-        date: new Date().toISOString().split("T")[0],
-        type: "image",
-        content: file,
-      }
-
-      setUploadHistory((prev) => [newUpload, ...prev])
+      await addCapturedImageToHistory(imageData, "Screenshot")
       alert("Screenshot captured successfully.")
-      logInfo("Captured screenshot via system picker", { width: canvas.width, height: canvas.height })
+      logInfo("Captured screenshot via system picker (getDisplayMedia)", { width: canvas.width, height: canvas.height })
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown display capture error"
-      logError("System screen capture failed", { message })
-      alert(`System screen capture failed: ${message}. Please allow screen sharing permissions and try again.`)
+      systemPickerError = error instanceof Error ? error.message : "Unknown display capture error"
+      logInfo("System picker capture failed; trying native fallback", { systemPickerError })
+    }
+
+    if (isElectron && window.electron?.screenCapture?.captureWithSystemTool) {
+      try {
+        const imageData = await window.electron.screenCapture.captureWithSystemTool()
+        if (!imageData) {
+          return
+        }
+        setIsScreenSourcesDialogOpen(false)
+        await addCapturedImageToHistory(imageData, "Screenshot")
+        logInfo("Captured screenshot via macOS screencapture fallback")
+        return
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "Unknown native capture error"
+        logError("Native screenshot fallback failed", { fallbackMessage, systemPickerError })
+        alert(
+          `System screen capture failed: ${fallbackMessage}.` +
+            (systemPickerError ? ` System picker error: ${systemPickerError}.` : "") +
+            " Please verify Screen Recording permissions and retry.",
+        )
+        return
+      }
+    }
+
+    if (systemPickerError) {
+      alert(`System screen capture failed: ${systemPickerError}. Please allow screen sharing permissions and try again.`)
     }
   }
 

@@ -14,6 +14,7 @@ export interface IElectronAPI {
     openPermissionSettings: () => Promise<boolean>;
     captureScreen: (sourceId: string) => Promise<string>;
     captureScreenArea: (bounds: { x: number; y: number; width: number; height: number }) => Promise<string>;
+    captureWithSystemTool: () => Promise<string | null>;
   };
   diagnostics: {
     get: () => Promise<{

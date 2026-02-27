@@ -3,7 +3,7 @@ const path = require("path")
 const fs = require("fs")
 const http = require("http")
 const net = require("net")
-const { spawn, spawnSync } = require("child_process")
+const { spawn, spawnSync, execFile } = require("child_process")
 const isDev = !app.isPackaged
 
 // Keep a global reference of the window object to prevent garbage collection
@@ -393,8 +393,18 @@ app.whenReady().then(() => {
   writeLog("info", "Electron app ready", { version: app.getVersion() })
   session.defaultSession.setDisplayMediaRequestHandler(
     async (_request, callback) => {
-      const sources = await desktopCapturer.getSources({ types: ["screen", "window"] })
-      callback({ video: sources[0], audio: false })
+      try {
+        const sources = await desktopCapturer.getSources({ types: ["screen", "window"] })
+        if (!sources || sources.length === 0) {
+          writeLog("warn", "Display media request had no sources; denying callback")
+          callback({})
+          return
+        }
+        callback({ video: sources[0], audio: false })
+      } catch (error) {
+        writeLog("error", "Display media request handler failed", { error: String(error) })
+        callback({})
+      }
     },
     { useSystemPicker: true },
   )
@@ -621,5 +631,47 @@ ipcMain.handle("capture-screen-area", async (event, bounds) => {
   } catch (error) {
     writeLog("error", "capture-screen-area failed", { bounds, error: String(error) })
     throw error
+  }
+})
+
+ipcMain.handle("capture-screen-system", async () => {
+  if (process.platform !== "darwin") {
+    return null
+  }
+
+  const tmpPath = path.join(app.getPath("temp"), `tingyun-system-capture-${Date.now()}.png`)
+  try {
+    const ok = await new Promise((resolve, reject) => {
+      execFile("screencapture", ["-i", "-x", tmpPath], (error) => {
+        if (error) {
+          // Exit code 1 is cancel in screencapture interactive flow.
+          if (typeof error.code === "number" && error.code === 1) {
+            resolve(false)
+            return
+          }
+          reject(error)
+          return
+        }
+        resolve(true)
+      })
+    })
+
+    if (!ok || !fs.existsSync(tmpPath)) {
+      return null
+    }
+    const b64 = fs.readFileSync(tmpPath).toString("base64")
+    writeLog("info", "Captured screenshot via macOS screencapture tool", { tmpPath })
+    return `data:image/png;base64,${b64}`
+  } catch (error) {
+    writeLog("error", "capture-screen-system failed", { error: String(error) })
+    throw error
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) {
+        fs.unlinkSync(tmpPath)
+      }
+    } catch (_) {
+      // ignore cleanup errors
+    }
   }
 })
