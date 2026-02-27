@@ -550,6 +550,8 @@ const TingyunSnippingTool = () => {
       imageBytes: imageFile.size,
       pdfBytes: pdfFileFromImage.size,
     })
+
+    await runConversionForFile(pdfFileFromImage, { autoSource: "screenshot-capture" })
   }
 
   const handleSystemScreenCapture = async () => {
@@ -822,6 +824,80 @@ const TingyunSnippingTool = () => {
     }
   }
 
+  const normalizeNoTextPlaceholders = (value: string): string =>
+    value
+      .replace(/\*No text detected on this page\.\*/gi, "")
+      .replace(/\\textit\{No text detected on this page\.\}/gi, "")
+      .trim()
+
+  const buildPreprocessedHandwritingCanvas = (
+    sourceCanvas: HTMLCanvasElement,
+    sourceCtx: CanvasRenderingContext2D,
+  ): HTMLCanvasElement | null => {
+    const { width, height } = sourceCanvas
+    const src = sourceCtx.getImageData(0, 0, width, height)
+    const data = src.data
+
+    let minX = width
+    let minY = height
+    let maxX = -1
+    let maxY = -1
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4
+        const r = data[i]
+        const g = data[i + 1]
+        const b = data[i + 2]
+        if (r < 200 || g < 200 || b < 200) {
+          if (x < minX) minX = x
+          if (y < minY) minY = y
+          if (x > maxX) maxX = x
+          if (y > maxY) maxY = y
+        }
+      }
+    }
+
+    if (maxX < 0 || maxY < 0) {
+      return null
+    }
+
+    const pad = 18
+    const sx = Math.max(0, minX - pad)
+    const sy = Math.max(0, minY - pad)
+    const sw = Math.min(width - sx, maxX - minX + pad * 2 + 1)
+    const sh = Math.min(height - sy, maxY - minY + pad * 2 + 1)
+    const scale = 3
+
+    const out = document.createElement("canvas")
+    out.width = Math.max(1, sw * scale)
+    out.height = Math.max(1, sh * scale)
+    const outCtx = out.getContext("2d")
+    if (!outCtx) {
+      return null
+    }
+
+    outCtx.fillStyle = "#ffffff"
+    outCtx.fillRect(0, 0, out.width, out.height)
+    outCtx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, out.width, out.height)
+
+    const outImg = outCtx.getImageData(0, 0, out.width, out.height)
+    const outData = outImg.data
+    for (let i = 0; i < outData.length; i += 4) {
+      const r = outData[i]
+      const g = outData[i + 1]
+      const b = outData[i + 2]
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b
+      const v = luma < 190 ? 0 : 255
+      outData[i] = v
+      outData[i + 1] = v
+      outData[i + 2] = v
+      outData[i + 3] = 255
+    }
+    outCtx.putImageData(outImg, 0, 0)
+    return out
+  }
+
   const handleScanHandwriting = async () => {
     resetConversionFeedback()
     const canvas = canvasRef.current
@@ -841,7 +917,12 @@ const TingyunSnippingTool = () => {
     setConversionProgress(10)
 
     try {
-      const pngDataUrl = canvas.toDataURL("image/png")
+      const preprocessedCanvas = buildPreprocessedHandwritingCanvas(canvas, ctx)
+      if (!preprocessedCanvas) {
+        throw new Error("No handwriting detected. Draw text with the pen tool and retry.")
+      }
+
+      const pngDataUrl = preprocessedCanvas.toDataURL("image/png")
       const pngBytes = Uint8Array.from(atob(pngDataUrl.split(",")[1]), (c) => c.charCodeAt(0))
 
       const pdfDoc = await PDFDocument.create()
@@ -855,10 +936,14 @@ const TingyunSnippingTool = () => {
       setCurrentStep("Running handwriting OCR")
       setConversionProgress(35)
       const markdown = await runModelConversion("ocr-only", handwritingPdf)
+      const normalizedText = normalizeNoTextPlaceholders(markdown)
+      if (!normalizedText) {
+        throw new Error("No handwriting text recognized. Try larger/darker writing and scan again.")
+      }
       setConversionProgress(100)
       setCurrentStep("Handwriting OCR completed")
 
-      const normalized = markdown.trim() || "*No handwriting text detected.*"
+      const normalized = normalizedText
       setIsHandwritingMode(false)
       setMarkdownResult(normalized)
       setLatexResult(convertMarkdownToLatex(normalized))
@@ -988,18 +1073,19 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const handleConvertPdf = async () => {
-    if (!pdfFile) return
-
+  const runConversionForFile = async (file: File, opts: { autoSource?: string } = {}) => {
     resetConversionFeedback()
     setIsConverting(true)
     setConversionProgress(0)
     setShowResult(false)
     setCurrentStep("Initializing...")
     setExecutionMeta(null)
+    if (opts.autoSource) {
+      logInfo("Auto conversion triggered", { source: opts.autoSource, fileName: file.name, model: selectedModel })
+    }
 
     try {
-      let result = await runModelConversion(selectedModel, pdfFile)
+      let result = await runModelConversion(selectedModel, file)
 
       // Apply quality settings
       if (qualityLevel < 50) {
@@ -1046,6 +1132,11 @@ const TingyunSnippingTool = () => {
       setCurrentStep("Failed")
       setConversionProgress(0)
     }
+  }
+
+  const handleConvertPdf = async () => {
+    if (!pdfFile) return
+    await runConversionForFile(pdfFile)
   }
 
   const handleDownloadMarkdown = async () => {
