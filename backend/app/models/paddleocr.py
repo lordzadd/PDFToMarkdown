@@ -3,14 +3,12 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
-import tempfile
 from typing import Any
 
 import numpy as np
-from pdf2image import convert_from_path
 
 from .base import ModelDefinition
-from .common import apply_common_options, get_ocr_converter
+from .common import apply_common_options, get_max_pages, get_ocr_converter, render_pdf_images
 
 logger = logging.getLogger(__name__)
 
@@ -58,39 +56,37 @@ class PaddleOcrConverter:
             markdown = get_ocr_converter().convert(pdf_path, None)
             return apply_common_options(markdown, options)
 
-        max_pages = None
-        if isinstance(options, dict) and isinstance(options.get("maxPages"), int):
-            max_pages = max(1, min(40, int(options["maxPages"])))
+        max_pages = get_max_pages(options)
+        if isinstance(max_pages, int):
+            max_pages = max(1, min(40, max_pages))
 
         try:
             ocr = self._load_ocr()
             pages_output: list[str] = []
-            with tempfile.TemporaryDirectory(prefix="paddleocr_") as tmp:
-                images = convert_from_path(pdf_path, dpi=96, output_folder=tmp, fmt="png")
-                images_to_process = images[:max_pages] if max_pages else images
-                for idx, image in enumerate(images_to_process, start=1):
-                    result = ocr.ocr(np.array(image))
-                    lines: list[str] = []
-                    if result:
-                        for page_result in result:
-                            if not page_result:
-                                continue
-                            if isinstance(page_result, dict):
-                                rec_texts = page_result.get("rec_texts", [])
-                                for text in rec_texts:
-                                    if isinstance(text, str) and text.strip():
-                                        lines.append(text.strip())
-                            else:
-                                # Compatibility with older PaddleOCR outputs.
-                                for entry in page_result:
-                                    try:
-                                        text = entry[1][0]
-                                    except Exception:
-                                        text = ""
-                                    if isinstance(text, str) and text.strip():
-                                        lines.append(text.strip())
-                    text = "\n".join(lines).strip() or "*No text detected on this page.*"
-                    pages_output.append(f"## Page {idx}\n\n{text}")
+            images = render_pdf_images(pdf_path, max_pages=max_pages, dpi=120)
+            for idx, image in enumerate(images, start=1):
+                result = ocr.ocr(np.array(image))
+                lines: list[str] = []
+                if result:
+                    for page_result in result:
+                        if not page_result:
+                            continue
+                        if isinstance(page_result, dict):
+                            rec_texts = page_result.get("rec_texts", [])
+                            for text in rec_texts:
+                                if isinstance(text, str) and text.strip():
+                                    lines.append(text.strip())
+                        else:
+                            # Compatibility with older PaddleOCR outputs.
+                            for entry in page_result:
+                                try:
+                                    text = entry[1][0]
+                                except Exception:
+                                    text = ""
+                                if isinstance(text, str) and text.strip():
+                                    lines.append(text.strip())
+                text = "\n".join(lines).strip() or "*No text detected on this page.*"
+                pages_output.append(f"## Page {idx}\n\n{text}")
 
             self.last_run = {
                 "engine_used": "paddleocr",

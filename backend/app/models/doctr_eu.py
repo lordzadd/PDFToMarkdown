@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-import tempfile
 from typing import Any
 
 import numpy as np
-from pdf2image import convert_from_path
 
 from .base import ModelDefinition
-from .common import apply_common_options, get_ocr_converter
+from .common import apply_common_options, get_max_pages, get_ocr_converter, render_pdf_images
 
 logger = logging.getLogger(__name__)
 
@@ -53,28 +51,26 @@ class DoctrEuConverter:
             markdown = get_ocr_converter().convert(pdf_path, None)
             return apply_common_options(markdown, options)
 
-        max_pages = None
-        if isinstance(options, dict) and isinstance(options.get("maxPages"), int):
-            max_pages = max(1, min(30, int(options["maxPages"])))
+        max_pages = get_max_pages(options)
+        if isinstance(max_pages, int):
+            max_pages = max(1, min(30, max_pages))
 
         try:
             predictor = self._load_predictor()
             pages_output: list[str] = []
-            with tempfile.TemporaryDirectory(prefix="doctr_eu_") as tmp:
-                images = convert_from_path(pdf_path, dpi=230, output_folder=tmp, fmt="png")
-                images_to_process = images[:max_pages] if max_pages else images
-                for idx, image in enumerate(images_to_process, start=1):
-                    doc = predictor([np.array(image)])
-                    page_text: list[str] = []
-                    if doc and getattr(doc, "pages", None):
-                        page = doc.pages[0]
-                        for block in page.blocks:
-                            for line in block.lines:
-                                words = [w.value for w in line.words if getattr(w, "value", "")]
-                                if words:
-                                    page_text.append(" ".join(words))
-                    text = "\n".join(page_text).strip() or "*No text detected on this page.*"
-                    pages_output.append(f"## Page {idx}\n\n{text}")
+            images = render_pdf_images(pdf_path, max_pages=max_pages, dpi=230)
+            for idx, image in enumerate(images, start=1):
+                doc = predictor([np.array(image)])
+                page_text: list[str] = []
+                if doc and getattr(doc, "pages", None):
+                    page = doc.pages[0]
+                    for block in page.blocks:
+                        for line in block.lines:
+                            words = [w.value for w in line.words if getattr(w, "value", "")]
+                            if words:
+                                page_text.append(" ".join(words))
+                text = "\n".join(page_text).strip() or "*No text detected on this page.*"
+                pages_output.append(f"## Page {idx}\n\n{text}")
 
             self.last_run = {
                 "engine_used": "doctr-eu",

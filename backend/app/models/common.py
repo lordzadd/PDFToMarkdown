@@ -6,6 +6,9 @@ from pathlib import Path
 import sys
 from typing import Any
 
+import fitz
+from PIL import Image
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "Scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -106,3 +109,22 @@ def get_max_pages(options: dict[str, Any] | None) -> int | None:
     if raw <= 0:
         return None
     return raw
+
+
+def render_pdf_images(pdf_path: str, max_pages: int | None = None, dpi: int = 200) -> list[Image.Image]:
+    # Poppler-free page rasterization for packaged desktop builds.
+    images: list[Image.Image] = []
+    zoom = max(dpi / 72.0, 1.0)
+    matrix = fitz.Matrix(zoom, zoom)
+
+    with fitz.open(pdf_path) as doc:
+        total_pages = len(doc)
+        limit = min(total_pages, max_pages) if max_pages else total_pages
+        for idx in range(limit):
+            page = doc.load_page(idx)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            mode = "RGB" if pix.n >= 3 else "L"
+            image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            images.append(image)
+
+    return images

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import tempfile
 from typing import Any
 
 import fitz
-from pdf2image import convert_from_path
 import pytesseract
 
 from .base import ModelDefinition
-from .common import apply_common_options, get_max_pages
+from .common import apply_common_options, get_max_pages, render_pdf_images
 
 
 class OcrOnlyConverter:
@@ -18,8 +16,9 @@ class OcrOnlyConverter:
         with fitz.open(pdf_path) as doc:
             total_pages = len(doc)
             limit = min(total_pages, max_pages) if max_pages else total_pages
+            images = render_pdf_images(pdf_path, max_pages=limit, dpi=300)
             for page_num in range(1, limit + 1):
-                page_text = self._ocr_page(pdf_path, page_num)
+                page_text = self._ocr_page(images, doc, page_num)
                 page_text = page_text.strip() or "*No text detected on this page.*"
                 pages_output.append(f"## Page {page_num}\n\n{page_text}")
             if limit < total_pages:
@@ -30,24 +29,27 @@ class OcrOnlyConverter:
         markdown = "\n\n".join(pages_output).strip() + "\n"
         return apply_common_options(markdown, options)
 
-    def _ocr_page(self, pdf_path: str, page_number: int) -> str:
-        with tempfile.TemporaryDirectory(prefix="pdf_ocr_only_") as temp_dir:
-            images = convert_from_path(
-                pdf_path,
-                dpi=300,
-                first_page=page_number,
-                last_page=page_number,
-                output_folder=temp_dir,
-                fmt="png",
-            )
-            if not images:
-                return ""
-            return pytesseract.image_to_string(images[0])
+    def _ocr_page(self, images: list, doc: fitz.Document, page_number: int) -> str:
+        if not images or page_number > len(images):
+            return ""
+
+        image = images[page_number - 1]
+        try:
+            text = pytesseract.image_to_string(image)
+            if text.strip():
+                return text
+        except Exception:
+            pass
+
+        # Last-resort text extraction when Tesseract is unavailable.
+        if 1 <= page_number <= len(doc):
+            return doc.load_page(page_number - 1).get_text("text")
+        return ""
 
 
 model = ModelDefinition(
     model_id="ocr-only",
-    description="Force OCR on every page using pdf2image + Tesseract.",
+    description="Force OCR on every page using PyMuPDF rasterization + Tesseract.",
     converter=OcrOnlyConverter(),
     capabilities=["ocr", "scanned-pdf"],
 )

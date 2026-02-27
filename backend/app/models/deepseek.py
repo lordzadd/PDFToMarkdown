@@ -7,10 +7,8 @@ import os
 import tempfile
 from typing import Any
 
-from pdf2image import convert_from_path
-
 from .base import ModelDefinition
-from .common import apply_common_options, get_ocr_converter
+from .common import apply_common_options, get_max_pages, get_ocr_converter, render_pdf_images
 
 logger = logging.getLogger(__name__)
 
@@ -151,66 +149,65 @@ class DeepSeekConverter:
             markdown = get_ocr_converter().convert(pdf_path, None)
             return apply_common_options(markdown, options)
 
-        max_pages = 2
-        if isinstance(options, dict) and isinstance(options.get("maxPages"), int):
-            max_pages = max(1, min(8, int(options["maxPages"])))
+        max_pages = get_max_pages(options) or 2
+        max_pages = max(1, min(8, int(max_pages)))
 
         pages_output: list[str] = []
-        with tempfile.TemporaryDirectory(prefix="deepseek_local_") as tmp:
-            images = convert_from_path(pdf_path, dpi=220, output_folder=tmp, fmt="png")
-            deepseek_error: Exception | None = None
-            use_official = os.getenv("DEEPSEEK_OFFICIAL_ENABLED", "true").lower() in {"1", "true", "yes"}
+        images = render_pdf_images(pdf_path, max_pages=max_pages, dpi=220)
+        deepseek_error: Exception | None = None
+        use_official = os.getenv("DEEPSEEK_OFFICIAL_ENABLED", "true").lower() in {"1", "true", "yes"}
 
-            for idx, image in enumerate(images[:max_pages], start=1):
-                text = ""
-                if use_official:
-                    try:
+        for idx, image in enumerate(images, start=1):
+            text = ""
+            if use_official:
+                try:
+                    with tempfile.TemporaryDirectory(prefix="deepseek_local_") as tmp:
                         page_path = os.path.join(tmp, f"page-{idx}.png")
                         image.save(page_path)
                         text = self._run_official_deepseek(page_path, tmp)
-                    except Exception as exc:  # pragma: no cover - hardware/runtime dependent
-                        deepseek_error = exc
-                        if idx == 1:
-                            logger.warning("deepseek official runtime failed: %s", exc)
+                except Exception as exc:  # pragma: no cover - hardware/runtime dependent
+                    deepseek_error = exc
+                    if idx == 1:
+                        logger.warning("deepseek official runtime failed: %s", exc)
 
-                if not text:
-                    try:
-                        text = self._run_backup(image)
-                    except Exception as exc:  # pragma: no cover - model/hardware dependent
-                        logger.warning("deepseek local backup failed: %s", exc)
-                        text = ""
+            if not text:
+                try:
+                    text = self._run_backup(image)
+                except Exception as exc:  # pragma: no cover - model/hardware dependent
+                    logger.warning("deepseek local backup failed: %s", exc)
+                    text = ""
 
-                if text:
-                    pages_output.append(f"## Page {idx}\n\n{text}")
+            if text:
+                pages_output.append(f"## Page {idx}\n\n{text}")
 
-            if not pages_output:
-                self.last_run = {
-                    "engine_used": "ocr-only",
-                    "provider_used": "local",
-                    "fallback_used": True,
-                    "note": "DeepSeek and backup local runtimes returned no text; used OCR fallback",
-                }
-                markdown = get_ocr_converter().convert(pdf_path, None)
-                return apply_common_options(markdown, options)
+        if not pages_output:
+            self.last_run = {
+                "engine_used": "ocr-only",
+                "provider_used": "local",
+                "fallback_used": True,
+                "note": "DeepSeek and backup local runtimes returned no text; used OCR fallback",
+            }
+            markdown = get_ocr_converter().convert(pdf_path, None)
+            return apply_common_options(markdown, options)
 
-            used_official = use_official and deepseek_error is None and self._cuda_available()
-            if used_official:
-                self.last_run = {
-                    "engine_used": "deepseek",
-                    "provider_used": "local",
-                    "fallback_used": False,
-                    "note": f"official local model={self._preferred_model_id}",
-                }
-            else:
-                note = f"local model={self._backup_model_id}"
-                if deepseek_error is not None:
-                    note = f"official deepseek unavailable ({deepseek_error}); backup {self._backup_model_id}"
-                self.last_run = {
-                    "engine_used": "deepseek-local-backup",
-                    "provider_used": "local",
-                    "fallback_used": True,
-                    "note": note,
-                }
+        used_official = use_official and deepseek_error is None and self._cuda_available()
+        if used_official:
+            self.last_run = {
+                "engine_used": "deepseek",
+                "provider_used": "local",
+                "fallback_used": False,
+                "note": f"official local model={self._preferred_model_id}",
+            }
+        else:
+            note = f"local model={self._backup_model_id}"
+            if deepseek_error is not None:
+                note = f"official deepseek unavailable ({deepseek_error}); backup {self._backup_model_id}"
+            self.last_run = {
+                "engine_used": "deepseek-local-backup",
+                "provider_used": "local",
+                "fallback_used": True,
+                "note": note,
+            }
 
         markdown = "\n\n".join(pages_output).strip() + "\n"
         return apply_common_options(markdown, options)
