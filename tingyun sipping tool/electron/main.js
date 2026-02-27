@@ -12,6 +12,7 @@ let embeddedNextUrl = null
 let backendProcess = null
 let backendBaseUrl = null
 let backendLastError = null
+let backendStartupPromise = null
 
 function ensureLogDir() {
   const logDir = path.join(app.getPath("userData"), "logs")
@@ -163,6 +164,32 @@ async function ensureBackendServer() {
   return null
 }
 
+function kickOffBackendStartup() {
+  if (backendStartupPromise) {
+    return backendStartupPromise
+  }
+
+  // Set an immediate default so renderer/API routes do not point to 8000 while startup is in flight.
+  const port = Number(process.env.FASTAPI_PORT || 8014)
+  process.env.FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || `http://127.0.0.1:${port}`
+
+  backendStartupPromise = ensureBackendServer()
+    .then((url) => {
+      if (url) {
+        process.env.FASTAPI_BASE_URL = url
+      }
+      return url
+    })
+    .catch((error) => {
+      writeLog("error", "Background backend startup failed", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return null
+    })
+
+  return backendStartupPromise
+}
+
 async function ensureEmbeddedNextServer() {
   if (embeddedNextUrl) {
     return embeddedNextUrl
@@ -192,11 +219,8 @@ async function ensureEmbeddedNextServer() {
 }
 
 async function createWindow() {
-  const backendUrl = await ensureBackendServer()
-  if (backendUrl) {
-    process.env.FASTAPI_BASE_URL = backendUrl
-  }
-  writeLog("info", "Creating application window", { backendUrl })
+  void kickOffBackendStartup()
+  writeLog("info", "Creating application window", { backendUrl: process.env.FASTAPI_BASE_URL || null })
 
   const { width, height } = screen.getPrimaryDisplay().workAreaSize
 
@@ -234,6 +258,14 @@ async function createWindow() {
   writeLog("info", "Loading renderer URL", { startUrl, isDev })
 
   mainWindow.loadURL(startUrl)
+
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    writeLog("error", "Renderer failed to load URL", {
+      errorCode,
+      errorDescription,
+      validatedURL,
+    })
+  })
 
   // Open DevTools in development mode
   if (isDev && process.env.ELECTRON_DISABLE_DEVTOOLS !== "1") {
