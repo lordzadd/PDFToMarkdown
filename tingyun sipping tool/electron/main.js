@@ -126,6 +126,15 @@ function resolveBackendRoot() {
   return fs.existsSync(packagedBackend) ? packagedBackend : null
 }
 
+function resolveBundledPythonPath() {
+  if (isDev) {
+    const devBundled = path.resolve(__dirname, "../build/python-env/bin/python3")
+    return fs.existsSync(devBundled) ? devBundled : null
+  }
+  const packagedBundled = path.join(process.resourcesPath, "python-env", "bin", "python3")
+  return fs.existsSync(packagedBundled) ? packagedBundled : null
+}
+
 async function ensureBackendServer() {
   let port = Number(process.env.FASTAPI_PORT || 8014)
   let baseUrl = `http://127.0.0.1:${port}`
@@ -169,6 +178,7 @@ async function ensureBackendServer() {
   writeLog("info", "Attempting backend startup", { backendRoot, baseUrl, isDev })
 
   const pythonCandidates = [
+    resolveBundledPythonPath() ? { cmd: resolveBundledPythonPath(), prefixArgs: [] } : null,
     process.env.PYTHON_PATH ? { cmd: process.env.PYTHON_PATH, prefixArgs: [] } : null,
     { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
     { cmd: "/usr/bin/python3", prefixArgs: [] },
@@ -184,7 +194,7 @@ async function ensureBackendServer() {
         cwd: backendRoot,
         env: {
           ...process.env,
-          PATH: `/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
+          PATH: `${path.dirname(candidate.cmd)}:/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
         },
         encoding: "utf8",
         timeout: 3000,
@@ -220,7 +230,7 @@ async function ensureBackendServer() {
             ...process.env,
             PYTHONWARNINGS: process.env.PYTHONWARNINGS || "ignore:urllib3 v2 only supports OpenSSL 1.1.1+",
             PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: process.env.PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK || "True",
-            PATH: `/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
+            PATH: `${path.dirname(candidate.cmd)}:/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
           },
         },
       )

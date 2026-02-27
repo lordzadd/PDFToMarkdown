@@ -15,10 +15,11 @@
     "backend:dev": "bash ./scripts/start-backend-dev.sh",
     "start": "next start",
     "lint": "next lint",
+    "python:prepare": "bash ./scripts/prepare-python-runtime.sh",
     "electron:dev": "bash ./scripts/start-electron-dev.sh",
     "electron:icons": "bash ./scripts/generate-electron-icons.sh",
-    "electron:build": "npm run electron:icons && next build && electron-builder --mac --arm64 --publish never",
-    "electron:dist": "npm run electron:icons && next build && electron-builder --mac dmg zip --arm64 --publish never",
+    "electron:build": "npm run python:prepare && npm run electron:icons && next build && electron-builder --mac --arm64 --publish never",
+    "electron:dist": "npm run python:prepare && npm run electron:icons && next build && electron-builder --mac dmg zip --arm64 --publish never",
     "electron:start": "bash ./scripts/start-electron-dev.sh",
     "server": "node electron/server.js"
   },
@@ -120,6 +121,10 @@
       {
         "from": "../Scripts",
         "to": "Scripts"
+      },
+      {
+        "from": "build/python-env",
+        "to": "python-env"
       }
     ],
     "directories": {
