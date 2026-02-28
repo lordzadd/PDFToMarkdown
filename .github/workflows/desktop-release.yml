@@ -1,0 +1,113 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} artifacts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: tingyun sipping tool
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'tingyun sipping tool/package-lock.json'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build bundled Python runtime
+        run: npm run python:prepare
+
+      - name: Build Next app
+        run: npm run build
+
+      - name: Build macOS artifacts
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+
+      - name: Build Windows artifacts
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win nsis portable --x64 --publish never
+
+      - name: Upload macOS artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            tingyun sipping tool/dist-electron/*.dmg
+            tingyun sipping tool/dist-electron/*-mac.zip
+          if-no-files-found: error
+
+      - name: Upload Windows artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: |
+            tingyun sipping tool/dist-electron/*.exe
+            tingyun sipping tool/dist-electron/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Generate release notes
+        run: |
+          ./.github/scripts/generate-release-notes.sh c447d32 "${GITHUB_SHA}" > RELEASE_NOTES.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Tingyun Snipping Tool ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            release-assets/**/*.dmg
+            release-assets/**/*.zip
+            release-assets/**/*.exe
+          draft: false
+          prerelease: false

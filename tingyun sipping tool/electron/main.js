@@ -177,11 +177,12 @@ function resolveBackendRoot() {
 }
 
 function resolveBundledPythonPath() {
+  const runtimeSegments = process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python3"]
   if (isDev) {
-    const devBundled = path.resolve(__dirname, "../build/python-env/bin/python3")
+    const devBundled = path.resolve(__dirname, "../build/python-env", ...runtimeSegments)
     return fs.existsSync(devBundled) ? devBundled : null
   }
-  const packagedBundled = path.join(process.resourcesPath, "python-env", "bin", "python3")
+  const packagedBundled = path.join(process.resourcesPath, "python-env", ...runtimeSegments)
   return fs.existsSync(packagedBundled) ? packagedBundled : null
 }
 
@@ -241,6 +242,7 @@ async function ensureBackendServer() {
   const pythonCandidates = [
     resolveBundledPythonPath() ? { cmd: resolveBundledPythonPath(), prefixArgs: [] } : null,
     process.env.PYTHON_PATH ? { cmd: process.env.PYTHON_PATH, prefixArgs: [] } : null,
+    process.platform === "win32" ? { cmd: "py", prefixArgs: ["-3"] } : null,
     { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
     { cmd: "/usr/bin/python3", prefixArgs: [] },
     { cmd: "python3", prefixArgs: [] },
@@ -251,11 +253,14 @@ async function ensureBackendServer() {
   for (const candidate of pythonCandidates) {
     try {
       const probeArgs = [...(candidate.prefixArgs || []), "-c", "import fastapi,uvicorn,pydantic; print('ok')"]
+      const candidatePath = path.dirname(candidate.cmd)
+      const extraPath =
+        process.platform === "darwin" ? `/Users/ritviksharma/Library/Python/3.9/bin${path.delimiter}` : ""
       const probe = spawnSync(candidate.cmd, probeArgs, {
         cwd: backendRoot,
         env: {
           ...process.env,
-          PATH: `${path.dirname(candidate.cmd)}:/Users/ritviksharma/Library/Python/3.9/bin:${process.env.PATH || ""}`,
+          PATH: `${candidatePath}${path.delimiter}${extraPath}${process.env.PATH || ""}`,
         },
         encoding: "utf8",
         timeout: 3000,

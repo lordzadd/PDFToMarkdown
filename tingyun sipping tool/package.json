@@ -20,6 +20,7 @@
     "electron:icons": "bash ./scripts/generate-electron-icons.sh",
     "electron:build": "npm run python:prepare && npm run electron:icons && next build && electron-builder --mac --arm64 --publish never",
     "electron:dist": "npm run python:prepare && npm run electron:icons && next build && electron-builder --mac dmg zip --arm64 --publish never",
+    "electron:dist:win": "npm run python:prepare && npm run electron:icons && next build && electron-builder --win nsis portable --x64 --publish never",
     "electron:start": "bash ./scripts/start-electron-dev.sh",
     "server": "node electron/server.js"
   },
@@ -144,6 +145,13 @@
         "AppImage"
       ],
       "icon": "build/icons/512x512.png"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icons/icon.ico"
     }
   },
   "keywords": [],
