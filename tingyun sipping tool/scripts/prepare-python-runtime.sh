@@ -15,6 +15,14 @@ else
 fi
 STAMP_FILE="$PY_RUNTIME_DIR/.requirements.sha256"
 
+if [[ "${SKIP_PYTHON_PREPARE:-0}" == "1" ]]; then
+  mkdir -p "$PY_RUNTIME_DIR"
+  echo "Skipped bundled python runtime preparation (SKIP_PYTHON_PREPARE=1)." > "$PY_RUNTIME_DIR/.skipped"
+  echo "SKIP" > "$STAMP_FILE"
+  echo "Skipping bundled python runtime preparation."
+  exit 0
+fi
+
 pick_builder_python() {
   local candidates=()
   if [[ "$IS_WINDOWS" -eq 1 ]]; then

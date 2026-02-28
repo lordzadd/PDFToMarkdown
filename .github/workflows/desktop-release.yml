@@ -45,6 +45,8 @@ jobs:
         run: npm ci
 
       - name: Build bundled Python runtime
+        env:
+          SKIP_PYTHON_PREPARE: "1"
         run: npm run python:prepare
 
       - name: Build Next app
