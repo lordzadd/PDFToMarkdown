@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .adapter_registry import AdapterRegistry
+from .chart_model_registry import extract_with_chart_model, list_chart_models
 from .models.common import parse_options_json
 
 
@@ -28,6 +29,17 @@ class ConversionResponse(BaseModel):
     model_id: str
     markdown: str
     execution: dict[str, Any]
+    charts: list[dict[str, Any]] = []
+    chart_execution: dict[str, Any] | None = None
+
+
+class ChartModelInfo(BaseModel):
+    model_id: str
+    name: str
+    description: str
+    enabled: bool
+    available: bool
+    availability_note: Optional[str] = None
 
 
 app = FastAPI(title="PDF to Markdown Model Server", version="3.0.0")
@@ -70,6 +82,23 @@ def list_models() -> list[ModelInfo]:
                 supports_options=adapter.info.supports_options,
                 latency_hint=adapter.info.latency_hint,
                 cost_hint=adapter.info.cost_hint,
+            )
+        )
+    return output
+
+
+@app.get("/chart-models", response_model=list[ChartModelInfo])
+def list_chart_model_options() -> list[ChartModelInfo]:
+    output: list[ChartModelInfo] = []
+    for item in list_chart_models():
+        output.append(
+            ChartModelInfo(
+                model_id=str(item.get("model_id") or ""),
+                name=str(item.get("name") or item.get("model_id") or ""),
+                description=str(item.get("description") or ""),
+                enabled=bool(item.get("enabled")),
+                available=bool(item.get("available")),
+                availability_note=item.get("availability_note") if isinstance(item.get("availability_note"), str) else None,
             )
         )
     return output
@@ -120,7 +149,31 @@ async def convert_pdf(
                 "fallback_used": False,
                 "note": None,
             }
-        return ConversionResponse(model_id=model_id, markdown=markdown, execution=execution)
+
+        chart_model_id = parsed_options.get("chartModel") if isinstance(parsed_options.get("chartModel"), str) else None
+        charts: list[dict[str, Any]] = []
+        chart_execution: dict[str, Any]
+        try:
+            charts, chart_execution = extract_with_chart_model(
+                chart_model_id,
+                markdown,
+                temp_path,
+                parsed_options,
+            )
+        except Exception as chart_exc:
+            chart_execution = {
+                "engine_used": chart_model_id or "heuristic-graph-v1",
+                "fallback_used": True,
+                "note": f"Chart extraction failed: {chart_exc}",
+            }
+
+        return ConversionResponse(
+            model_id=model_id,
+            markdown=markdown,
+            execution=execution,
+            charts=charts,
+            chart_execution=chart_execution,
+        )
     except HTTPException:
         raise
     except Exception as exc:

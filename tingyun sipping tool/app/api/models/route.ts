@@ -13,21 +13,17 @@ export async function GET() {
       throw new Error(`Backend returned ${response.status}`)
     }
 
-    return NextResponse.json({ models: data })
+    return NextResponse.json(data)
   } catch {
     return NextResponse.json(
-      {
-        models: [
-          { model_id: 'nougat', description: 'Nougat mode (backend unavailable).' },
-          { model_id: 'gpt4v', description: 'GPT-4V mode (backend unavailable).' },
-          { model_id: 'layoutlm', description: 'LayoutLM mode (backend unavailable).' },
-          { model_id: 'markitdown', description: 'MarkItDown mode (backend unavailable).' },
-          { model_id: 'docling', description: 'Docling mode (backend unavailable).' },
-          { model_id: 'zerox', description: 'ZeroX mode (backend unavailable).' },
-          { model_id: 'ocr-only', description: 'OCR-only mode (backend unavailable).' },
-        ],
-        warning: `Model backend unavailable at ${baseUrl}. Start FastAPI locally or configure FASTAPI_BASE_URL.`,
-      },
+      [
+        { model_id: 'layoutlm', description: 'LayoutLM mode (backend unavailable).', enabled: true, available: true },
+        { model_id: 'markitdown', description: 'MarkItDown mode (backend unavailable).', enabled: true, available: true },
+        { model_id: 'docling', description: 'Docling mode (backend unavailable).', enabled: true, available: true },
+        { model_id: 'doctr-eu', description: 'docTR mode (backend unavailable).', enabled: true, available: true },
+        { model_id: 'zerox', description: 'ZeroX mode (backend unavailable).', enabled: true, available: true },
+        { model_id: 'ocr-only', description: 'OCR-only mode (backend unavailable).', enabled: true, available: true },
+      ],
       { status: 200 },
     )
   }

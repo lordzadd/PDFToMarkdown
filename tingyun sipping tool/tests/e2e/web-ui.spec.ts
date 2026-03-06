@@ -41,6 +41,9 @@ test("web ui functions and model conversions", async ({ page }, testInfo) => {
   await expect(page.getByRole("tab", { name: "MARKDOWN" })).toHaveAttribute("aria-selected", "true")
   await page.getByRole("tab", { name: "LATEX" }).click()
   await expect(page.getByRole("tab", { name: "LATEX" })).toHaveAttribute("aria-selected", "true")
+  await page.getByRole("tab", { name: "CHARTS" }).click()
+  await expect(page.getByRole("tab", { name: "CHARTS" })).toHaveAttribute("aria-selected", "true")
+  await page.getByRole("tab", { name: "LATEX" }).click()
 
   await page.locator("button:has(svg.lucide-history)").click()
   await expect(page.getByRole("heading", { name: "Previous Uploads" })).toBeVisible()
@@ -77,6 +80,8 @@ test("web ui functions and model conversions", async ({ page }, testInfo) => {
       await expect(page.getByText(model.expectedPattern)).toBeVisible({ timeout: 300_000 })
       await expect(page.getByRole("heading", { name: "Document Segments" })).toBeVisible()
       await expect(page.getByRole("button", { name: /Download (Markdown|LaTeX)/ })).toBeVisible()
+      await page.getByRole("tab", { name: "CHARTS" }).click()
+      await expect(page.getByRole("button", { name: "Download Charts JSON" })).toBeVisible()
     })
   }
 

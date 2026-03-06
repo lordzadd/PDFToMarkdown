@@ -29,6 +29,7 @@ import {
   History,
   Layers,
   Monitor,
+  Copy,
 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -91,6 +92,27 @@ const PDF_MODELS = [
     description: "OmniAI ZeroX OCR adapter with LLM-assisted extraction",
     strengths: ["Complex layouts", "LLM-assisted parsing", "OCR fallback"],
     processingTime: "Slow",
+  },
+]
+
+const CHART_MODELS = [
+  {
+    id: "geometry-graph-v1",
+    name: "Geometry Graph v1",
+    description: "OpenCV-based node/edge detection from image geometry with OCR-assisted labels/weights.",
+    strengths: ["Best graph topology recovery", "Image-aware", "Graph screenshots"],
+  },
+  {
+    id: "heuristic-graph-v1",
+    name: "Heuristic Graph v1",
+    description: "OCR-token heuristic with reconstructed graph preview for manual correction.",
+    strengths: ["Reconstructed preview", "High recall", "Manual audit friendly"],
+  },
+  {
+    id: "conservative-v1",
+    name: "Conservative v1",
+    description: "Lower hallucination tolerance with conservative confidence behavior.",
+    strengths: ["Lower risk output", "Strict validation workflows"],
   },
 ]
 
@@ -195,6 +217,55 @@ interface ElectronDiagnostics {
   recentLogs: string[]
 }
 
+type ChartValidationStatus = "valid" | "malformed" | "schema_mismatch"
+
+interface ChartResult {
+  id: string
+  page: number | null
+  chart_type: string | null
+  series: any[]
+  confidence: number | null
+  title: string | null
+  x_label: string | null
+  y_label: string | null
+  preview_image_data_url: string | null
+  raw: unknown
+  json_preview: string
+  validation_status: ChartValidationStatus
+  validation_error: string | null
+  flags?: string[]
+}
+
+const buildDiagramFallbackChart = (previewDataUrl: string, markdownSample: string): ChartResult => ({
+  id: `chart-fallback-${Date.now()}`,
+  page: 1,
+  chart_type: "diagram",
+  series: [],
+  confidence: 0.2,
+  title: "Diagram candidate from screenshot/handwriting",
+  x_label: null,
+  y_label: null,
+  preview_image_data_url: previewDataUrl,
+  raw: {
+    source: "image-fallback",
+    markdown_sample: markdownSample.slice(0, 2000),
+  },
+  json_preview: JSON.stringify(
+    {
+      id: "chart-fallback",
+      page: 1,
+      chart_type: "diagram",
+      confidence: 0.2,
+      flags: ["image-derived", "manual-review-recommended"],
+      series: [],
+    },
+    null,
+    2,
+  ),
+  validation_status: "valid",
+  validation_error: null,
+})
+
 interface BackendModelInfo {
   model_id: string
   available: boolean
@@ -202,7 +273,17 @@ interface BackendModelInfo {
   enabled: boolean
 }
 
+interface ChartModelInfo {
+  model_id: string
+  name: string
+  description: string
+  available: boolean
+  availability_note?: string | null
+  enabled: boolean
+}
+
 type PageLimitOption = "full" | "1" | "2" | "5" | "10" | "20"
+type InputOrigin = "pdf" | "screenshot" | "handwriting" | "history-image" | null
 
 const TingyunSnippingTool = () => {
   const [isElectron, setIsElectron] = useState(false)
@@ -210,6 +291,7 @@ const TingyunSnippingTool = () => {
   const [isHandwritingMode, setIsHandwritingMode] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [selectedModel, setSelectedModel] = useState("docling")
+  const [selectedChartModel, setSelectedChartModel] = useState("geometry-graph-v1")
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [pdfFilePath, setPdfFilePath] = useState<string | null>(null)
   const [isConverting, setIsConverting] = useState(false)
@@ -251,6 +333,10 @@ const TingyunSnippingTool = () => {
   const [documentSegments, setDocumentSegments] = useState<any[]>([])
   const [activeSegment, setActiveSegment] = useState<number | null>(null)
   const [executionMeta, setExecutionMeta] = useState<ExecutionMeta | null>(null)
+  const [chartResults, setChartResults] = useState<ChartResult[]>([])
+  const [chartExecutionMeta, setChartExecutionMeta] = useState<Record<string, any> | null>(null)
+  const [showRawChartMap, setShowRawChartMap] = useState<Record<string, boolean>>({})
+  const [lastCapturePreviewDataUrl, setLastCapturePreviewDataUrl] = useState<string | null>(null)
   const [isScreenSourcesDialogOpen, setIsScreenSourcesDialogOpen] = useState(false)
   const [screenSources, setScreenSources] = useState<any[]>([])
   const [selectedScreenSource, setSelectedScreenSource] = useState<string | null>(null)
@@ -261,6 +347,8 @@ const TingyunSnippingTool = () => {
   const [lastDiagnostics, setLastDiagnostics] = useState<ElectronDiagnostics | null>(null)
   const [isHandwritingConverting, setIsHandwritingConverting] = useState(false)
   const [backendModelInfo, setBackendModelInfo] = useState<Record<string, BackendModelInfo>>({})
+  const [chartModelInfo, setChartModelInfo] = useState<Record<string, ChartModelInfo>>({})
+  const [inputOrigin, setInputOrigin] = useState<InputOrigin>(null)
 
   // Update quality level when model changes
   useEffect(() => {
@@ -321,6 +409,31 @@ const TingyunSnippingTool = () => {
   }, [])
 
   useEffect(() => {
+    let cancelled = false
+    const loadChartModels = async () => {
+      try {
+        const response = await fetch("/api/chart-models")
+        if (!response.ok) return
+        const data = (await response.json()) as ChartModelInfo[]
+        if (cancelled || !Array.isArray(data)) return
+        const mapped: Record<string, ChartModelInfo> = {}
+        for (const item of data) {
+          if (item?.model_id) {
+            mapped[item.model_id] = item
+          }
+        }
+        setChartModelInfo(mapped)
+      } catch (_) {
+        // keep static fallback behavior if chart model metadata is unavailable
+      }
+    }
+    void loadChartModels()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     if (Object.keys(backendModelInfo).length === 0) return
     if (!isModelAvailable(selectedModel)) {
       const fallbackModel = pickPreferredAvailableModel()
@@ -332,6 +445,19 @@ const TingyunSnippingTool = () => {
       })
     }
   }, [backendModelInfo, selectedModel])
+
+  useEffect(() => {
+    if (Object.keys(chartModelInfo).length === 0) return
+    if (!isChartModelAvailable(selectedChartModel)) {
+      const fallbackModel = pickPreferredChartModel()
+      setSelectedChartModel(fallbackModel)
+      logInfo("Selected chart model unavailable in current runtime; switched model", {
+        from: selectedChartModel,
+        to: fallbackModel,
+        reason: chartModelInfo[selectedChartModel]?.availability_note || "unavailable",
+      })
+    }
+  }, [chartModelInfo, selectedChartModel])
 
   const logInfo = (message: string, meta: Record<string, unknown> = {}) => {
     if (isElectron && window.electron?.logger?.info) {
@@ -355,6 +481,12 @@ const TingyunSnippingTool = () => {
     return Boolean(info.enabled && info.available)
   }
 
+  const isChartModelAvailable = (modelId: string): boolean => {
+    const info = chartModelInfo[modelId]
+    if (!info) return true
+    return Boolean(info.enabled && info.available)
+  }
+
   const pickPreferredAvailableModel = (): string => {
     const preferenceOrder = ["docling", "markitdown", "layoutlm", "doctr-eu", "zerox", "ocr-only"]
     for (const candidate of preferenceOrder) {
@@ -363,6 +495,16 @@ const TingyunSnippingTool = () => {
       }
     }
     return "ocr-only"
+  }
+
+  const pickPreferredChartModel = (): string => {
+    const preferenceOrder = ["geometry-graph-v1", "heuristic-graph-v1", "conservative-v1"]
+    for (const candidate of preferenceOrder) {
+      if (CHART_MODELS.some((m) => m.id === candidate) && isChartModelAvailable(candidate)) {
+        return candidate
+      }
+    }
+    return "geometry-graph-v1"
   }
 
   const resetConversionFeedback = () => {
@@ -375,6 +517,10 @@ const TingyunSnippingTool = () => {
     resetConversionFeedback()
     setMarkdownResult("")
     setLatexResult("")
+    setChartResults([])
+    setChartExecutionMeta(null)
+    setShowRawChartMap({})
+    setLastCapturePreviewDataUrl(null)
     setDocumentSegments([])
     setActiveSegment(null)
   }
@@ -405,9 +551,10 @@ const TingyunSnippingTool = () => {
     return new File([pdfBytes], outputName, { type: "application/pdf" })
   }
 
-  const setActivePdfInput = (file: File, path: string | null = null) => {
+  const setActivePdfInput = (file: File, path: string | null = null, origin: InputOrigin = "pdf") => {
     setPdfFile(file)
     setPdfFilePath(path)
+    setInputOrigin(origin)
     resetLoadedDocumentState()
   }
 
@@ -511,7 +658,7 @@ const TingyunSnippingTool = () => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0]
       if (file.type === "application/pdf") {
-        setActivePdfInput(file)
+        setActivePdfInput(file, null, "pdf")
         logInfo("Loaded PDF from browser file input", { fileName: file.name, size: file.size })
 
         // Add to history
@@ -551,7 +698,7 @@ const TingyunSnippingTool = () => {
 
         const file = new File([buffer], name, { type: "application/pdf" })
 
-        setActivePdfInput(file, path)
+        setActivePdfInput(file, path, "pdf")
         logInfo("Opened PDF in Electron", { path, name })
 
         // Add to history
@@ -590,7 +737,7 @@ const TingyunSnippingTool = () => {
 
   const handleHistoryItemClick = async (item: UploadHistory) => {
     if (item.type === "pdf" && item.content instanceof File) {
-      setActivePdfInput(item.content, item.path || null)
+      setActivePdfInput(item.content, item.path || null, "pdf")
     } else if (item.type === "pdf") {
       // For sample data without actual file content
       alert(`This would load ${item.name} (sample data)`)
@@ -598,7 +745,7 @@ const TingyunSnippingTool = () => {
       try {
         const stem = item.name.replace(/\.[^.]+$/, "") || "screenshot"
         const pdfFromImage = await convertImageFileToPdfFile(item.content, `${stem}.pdf`)
-        setActivePdfInput(pdfFromImage, item.path || null)
+        setActivePdfInput(pdfFromImage, item.path || null, "history-image")
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown image load error"
         logError("Failed to load image history item for OCR", { message, itemName: item.name })
@@ -649,6 +796,7 @@ const TingyunSnippingTool = () => {
     const blob = await response.blob()
     const safeStem = name.toLowerCase().replace(/\s+/g, "-")
     const imageFile = new File([blob], `${safeStem}.png`, { type: "image/png" })
+    setLastCapturePreviewDataUrl(imageData)
     const newUpload: UploadHistory = {
       id: Date.now(),
       name,
@@ -660,7 +808,7 @@ const TingyunSnippingTool = () => {
 
     const pdfFileFromImage = await convertImageFileToPdfFile(imageFile, `${safeStem}.pdf`)
     await saveDebugCaptureArtifacts("screenshot", imageFile, pdfFileFromImage)
-    setActivePdfInput(pdfFileFromImage)
+    setActivePdfInput(pdfFileFromImage, null, "screenshot")
     logInfo("Loaded captured screenshot as active PDF input", {
       imageName: imageFile.name,
       pdfName: pdfFileFromImage.name,
@@ -1053,6 +1201,7 @@ const TingyunSnippingTool = () => {
       }
 
       const pngDataUrl = preprocessedCanvas.toDataURL("image/png")
+      setLastCapturePreviewDataUrl(pngDataUrl)
       const pngBytes = Uint8Array.from(atob(pngDataUrl.split(",")[1]), (c) => c.charCodeAt(0))
 
       const pdfDoc = await PDFDocument.create()
@@ -1064,16 +1213,17 @@ const TingyunSnippingTool = () => {
       const handwritingPdf = new File([pdfBytes], "handwriting.pdf", { type: "application/pdf" })
       const handwritingPng = new File([pngBytes], "handwriting.png", { type: "image/png" })
       await saveDebugCaptureArtifacts("handwriting", handwritingPng, handwritingPdf)
+      setInputOrigin("handwriting")
 
       const primaryModel = isModelAvailable(selectedModel) ? selectedModel : pickPreferredAvailableModel()
       setCurrentStep(`Running handwriting OCR (${primaryModel})`)
       setConversionProgress(35)
-      let markdown = await runModelConversion(primaryModel, handwritingPdf)
+      let markdown = await runModelConversion(primaryModel, handwritingPdf, "handwriting")
       let normalizedText = normalizeNoTextPlaceholders(markdown)
       if (!normalizedText && primaryModel !== "ocr-only" && isModelAvailable("ocr-only")) {
         setCurrentStep(`No text found with ${primaryModel}. Retrying with OCR-only`)
         setConversionProgress(60)
-        markdown = await runModelConversion("ocr-only", handwritingPdf)
+        markdown = await runModelConversion("ocr-only", handwritingPdf, "handwriting-fallback")
         normalizedText = normalizeNoTextPlaceholders(markdown)
       }
       if (!normalizedText) {
@@ -1121,6 +1271,7 @@ const TingyunSnippingTool = () => {
       qualityLevel,
       preserveTables,
       preserveEquations,
+      chartModel: selectedChartModel,
       segmentation: segmentationOptions,
       ...(maxPages ? { maxPages } : {}),
     }
@@ -1155,7 +1306,7 @@ const TingyunSnippingTool = () => {
     }
   }
 
-  const runModelConversion = async (modelId: string, file: File) => {
+  const runModelConversion = async (modelId: string, file: File, sourceHint?: string) => {
     const commonOptions = buildCommonOptions()
     const model = PDF_MODELS.find((m) => m.id === modelId)
     const endpoint = `/api/convert/${encodeURIComponent(modelId)}`
@@ -1223,6 +1374,23 @@ const TingyunSnippingTool = () => {
       setDocumentSegments(Array.isArray(data.segments) ? data.segments : [])
       setActiveSegment(Array.isArray(data.segments) && data.segments.length > 0 ? 0 : null)
       setExecutionMeta(data.execution ?? null)
+      const normalizedCharts = Array.isArray(data.charts) ? (data.charts as ChartResult[]) : []
+      const shouldSeedImageFallback =
+        normalizedCharts.length === 0 &&
+        Boolean(lastCapturePreviewDataUrl) &&
+        (inputOrigin === "screenshot" || inputOrigin === "handwriting" || inputOrigin === "history-image")
+      const fallbackCharts = shouldSeedImageFallback
+        ? [buildDiagramFallbackChart(lastCapturePreviewDataUrl as string, typeof data.markdown === "string" ? data.markdown : "")]
+        : []
+      setChartResults(shouldSeedImageFallback ? fallbackCharts : normalizedCharts)
+      setChartExecutionMeta(
+        data.chart_execution && typeof data.chart_execution === "object"
+          ? data.chart_execution
+          : shouldSeedImageFallback
+            ? { engine_used: "ui-image-fallback", fallback_used: true, note: "No charts detected by backend; added image candidate for manual review." }
+            : null,
+      )
+      setShowRawChartMap({})
 
       logInfo("Conversion completed", {
         modelId,
@@ -1251,12 +1419,15 @@ const TingyunSnippingTool = () => {
     setShowResult(false)
     setCurrentStep("Initializing...")
     setExecutionMeta(null)
+    setChartResults([])
+    setChartExecutionMeta(null)
+    setShowRawChartMap({})
     if (opts.autoSource) {
       logInfo("Auto conversion triggered", { source: opts.autoSource, fileName: file.name, model: modelForRun })
     }
 
     try {
-      let result = await runModelConversion(modelForRun, file)
+      let result = await runModelConversion(modelForRun, file, opts.autoSource)
 
       // Handle table preservation setting
       if (!preserveTables && result.includes("| ")) {
@@ -1440,9 +1611,81 @@ const TingyunSnippingTool = () => {
     }
   }
 
+  const invalidCharts = chartResults.filter((chart) => chart.validation_status !== "valid")
+
+  const buildChartExportPayload = () => ({
+    version: "chart-json-v1",
+    model: selectedModel,
+    generated_at: new Date().toISOString(),
+    charts: chartResults.map((chart) => ({
+      id: chart.id,
+      page: chart.page,
+      chart_type: chart.chart_type,
+      title: chart.title,
+      x_label: chart.x_label,
+      y_label: chart.y_label,
+      series: chart.series,
+      confidence: chart.confidence,
+      validation_status: chart.validation_status,
+      validation_error: chart.validation_error,
+      raw: chart.raw,
+    })),
+  })
+
+  const handleCopyChartJson = async (chart: ChartResult) => {
+    try {
+      await navigator.clipboard.writeText(chart.json_preview)
+      alert(`Copied ${chart.id} JSON`)
+    } catch {
+      alert("Unable to copy chart JSON")
+    }
+  }
+
+  const handleDownloadCharts = async () => {
+    if (!chartResults.length) {
+      alert("No chart output to export")
+      return
+    }
+    if (invalidCharts.length > 0) {
+      alert(`Cannot export: ${invalidCharts.map((c) => c.id).join(", ")} have invalid JSON/schema`)
+      return
+    }
+
+    const payloadText = JSON.stringify(buildChartExportPayload(), null, 2)
+    const fileName = pdfFile?.name.replace(".pdf", "") || "converted"
+
+    if (isElectron) {
+      try {
+        const success = await window.electron.fileSystem.saveFile({
+          content: payloadText,
+          defaultPath: `${fileName}.charts.json`,
+          filters: [{ name: "JSON Files", extensions: ["json"] }],
+        })
+        if (success) {
+          alert("Charts JSON file saved successfully!")
+        }
+      } catch (error) {
+        console.error("Error saving chart json file:", error)
+        alert("Error saving chart JSON file. Please try again.")
+      }
+      return
+    }
+
+    const blob = new Blob([payloadText], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${fileName}.charts.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const handleClearContent = () => {
     setPdfFile(null)
     setPdfFilePath(null)
+    setInputOrigin(null)
     resetConversionFeedback()
     setMarkdownResult("")
     setLatexResult("")
@@ -1455,8 +1698,10 @@ const TingyunSnippingTool = () => {
     if (showResult) {
       if (activeTab === "markdown") {
         handleDownloadMarkdown()
-      } else {
+      } else if (activeTab === "latex") {
         handleDownloadLatex()
+      } else {
+        handleDownloadCharts()
       }
     } else {
       alert("Convert a PDF first or create content to download")
@@ -1668,6 +1913,12 @@ const TingyunSnippingTool = () => {
               className={`px-4 ${activeTab === "latex" ? "bg-purple-500 text-white" : "bg-gray-100 text-gray-700"}`}
             >
               LATEX
+            </TabsTrigger>
+            <TabsTrigger
+              value="charts"
+              className={`px-4 ${activeTab === "charts" ? "bg-green-600 text-white" : "bg-gray-100 text-gray-700"}`}
+            >
+              CHARTS
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -1896,7 +2147,7 @@ const TingyunSnippingTool = () => {
               <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-2">
                   <h3 className="font-medium">
-                    {activeTab === "markdown" ? "Converted Markdown" : "Converted LaTeX"}
+                    {activeTab === "markdown" ? "Converted Markdown" : activeTab === "latex" ? "Converted LaTeX" : "Extracted Charts"}
                     {activeSegment !== null && documentSegments.length > 0 && (
                       <span className="text-xs text-gray-500 ml-2">
                         - Viewing {documentSegments[activeSegment].type}
@@ -1911,10 +2162,11 @@ const TingyunSnippingTool = () => {
                   size="sm"
                   variant="outline"
                   className="flex items-center gap-1"
-                  onClick={activeTab === "markdown" ? handleDownloadMarkdown : handleDownloadLatex}
+                  onClick={activeTab === "markdown" ? handleDownloadMarkdown : activeTab === "latex" ? handleDownloadLatex : handleDownloadCharts}
+                  disabled={activeTab === "charts" && invalidCharts.length > 0}
                 >
                   <Download size={14} />
-                  Download {activeTab === "markdown" ? "Markdown" : "LaTeX"}
+                  Download {activeTab === "markdown" ? "Markdown" : activeTab === "latex" ? "LaTeX" : "Charts JSON"}
                 </Button>
               </div>
               {executionMeta && (
@@ -1926,30 +2178,121 @@ const TingyunSnippingTool = () => {
                   {executionMeta.note ? ` - ${executionMeta.note}` : ""}
                 </div>
               )}
-              <Textarea
-                value={
-                  activeTab === "markdown"
-                    ? activeSegment !== null && documentSegments.length > 0
-                      ? documentSegments[activeSegment].content
-                      : markdownResult
-                    : latexResult
-                }
-                onChange={(e) =>
-                  activeTab === "markdown"
-                    ? activeSegment !== null && documentSegments.length > 0
-                      ? setDocumentSegments((prev) => {
-                          const newSegments = [...prev]
-                          newSegments[activeSegment] = {
-                            ...newSegments[activeSegment],
-                            content: e.target.value,
-                          }
-                          return newSegments
-                        })
-                      : setMarkdownResult(e.target.value)
-                    : setLatexResult(e.target.value)
-                }
-                className="flex-1 font-mono text-sm"
-              />
+              {activeTab !== "charts" ? (
+                <Textarea
+                  value={
+                    activeTab === "markdown"
+                      ? activeSegment !== null && documentSegments.length > 0
+                        ? documentSegments[activeSegment].content
+                        : markdownResult
+                      : latexResult
+                  }
+                  onChange={(e) =>
+                    activeTab === "markdown"
+                      ? activeSegment !== null && documentSegments.length > 0
+                        ? setDocumentSegments((prev) => {
+                            const newSegments = [...prev]
+                            newSegments[activeSegment] = {
+                              ...newSegments[activeSegment],
+                              content: e.target.value,
+                            }
+                            return newSegments
+                          })
+                        : setMarkdownResult(e.target.value)
+                      : setLatexResult(e.target.value)
+                  }
+                  className="flex-1 font-mono text-sm"
+                />
+              ) : (
+                <div className="flex-1 overflow-y-auto space-y-3">
+                  <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                    <span className="font-medium">Chart model:</span>{" "}
+                    {CHART_MODELS.find((m) => m.id === selectedChartModel)?.name || selectedChartModel}
+                  </div>
+                  {chartExecutionMeta?.note && (
+                    <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                      <span className="font-medium">Chart execution:</span> {String(chartExecutionMeta.note)}
+                    </div>
+                  )}
+                  {chartResults.length === 0 ? (
+                    <div className="rounded border border-dashed border-gray-300 px-4 py-6 text-sm text-gray-500">
+                      No charts detected for this conversion.
+                    </div>
+                  ) : (
+                    chartResults.map((chart) => (
+                      <div key={chart.id} className="rounded border border-gray-200 p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-medium">{chart.id}</div>
+                          <div
+                            className={`text-xs px-2 py-0.5 rounded-full ${
+                              chart.validation_status === "valid"
+                                ? "bg-green-100 text-green-700"
+                                : chart.validation_status === "schema_mismatch"
+                                  ? "bg-yellow-100 text-yellow-800"
+                                  : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            {chart.validation_status === "valid"
+                              ? "Valid JSON"
+                              : chart.validation_status === "schema_mismatch"
+                                ? "Schema mismatch"
+                                : "Malformed JSON"}
+                          </div>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          type: {chart.chart_type || "unknown"} • page: {chart.page ?? "n/a"} • confidence:{" "}
+                          {chart.confidence !== null ? Math.round(chart.confidence * 100) + "%" : "n/a"}
+                        </div>
+                        {Array.isArray(chart.flags) && chart.flags.length > 0 && (
+                          <div className="text-xs text-gray-500">flags: {chart.flags.join(", ")}</div>
+                        )}
+                        {chart.validation_error && <div className="text-xs text-red-600">{chart.validation_error}</div>}
+                        {chart.preview_image_data_url ? (
+                          <img
+                            src={chart.preview_image_data_url}
+                            alt={`${chart.id} preview`}
+                            className="max-h-48 w-auto border border-gray-200 rounded"
+                          />
+                        ) : lastCapturePreviewDataUrl ? (
+                          <img
+                            src={lastCapturePreviewDataUrl}
+                            alt={`${chart.id} source preview`}
+                            className="max-h-48 w-auto border border-gray-200 rounded"
+                          />
+                        ) : (
+                          <div className="text-xs text-gray-500">No chart preview available</div>
+                        )}
+                        <Textarea value={chart.json_preview} readOnly className="font-mono text-xs min-h-40" />
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" variant="outline" onClick={() => handleCopyChartJson(chart)}>
+                            <Copy size={14} className="mr-1" />
+                            Copy JSON
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() =>
+                              setShowRawChartMap((prev) => ({
+                                ...prev,
+                                [chart.id]: !prev[chart.id],
+                              }))
+                            }
+                          >
+                            {showRawChartMap[chart.id] ? "Hide raw" : "Show raw"}
+                          </Button>
+                        </div>
+                        {showRawChartMap[chart.id] && (
+                          <Textarea
+                            value={JSON.stringify(chart.raw ?? null, null, 2)}
+                            readOnly
+                            className="font-mono text-xs min-h-28"
+                          />
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1972,10 +2315,10 @@ const TingyunSnippingTool = () => {
       <div className="flex justify-center p-4">
         <Button
           className="px-12 py-2 bg-purple-100 hover:bg-purple-200 text-purple-600 rounded-md"
-          disabled={isConverting || !showResult}
+          disabled={isConverting || !showResult || (activeTab === "charts" && invalidCharts.length > 0)}
           onClick={handleDownloadContent}
         >
-          Save {activeTab === "markdown" ? "Markdown" : "LaTeX"}
+          Save {activeTab === "markdown" ? "Markdown" : activeTab === "latex" ? "LaTeX" : "Charts JSON"}
         </Button>
       </div>
 
@@ -1997,8 +2340,9 @@ const TingyunSnippingTool = () => {
           </DialogHeader>
 
           <TabsComponent defaultValue="models" className="flex flex-col min-h-0 flex-1">
-            <TabsListComponent className="grid grid-cols-3 shrink-0">
+            <TabsListComponent className="grid grid-cols-4 shrink-0">
               <TabsTriggerComponent value="models">Models</TabsTriggerComponent>
+              <TabsTriggerComponent value="chart-models">Charts</TabsTriggerComponent>
               <TabsTriggerComponent value="quality">Quality</TabsTriggerComponent>
               <TabsTriggerComponent value="segmentation">Segmentation</TabsTriggerComponent>
             </TabsListComponent>
@@ -2032,6 +2376,43 @@ const TingyunSnippingTool = () => {
                         <div className="flex flex-wrap gap-1 mt-1">
                           {model.strengths.map((strength, index) => (
                             <span key={index} className="text-xs px-2 py-0.5 bg-purple-50 text-purple-600 rounded-full">
+                              {strength}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </RadioGroup>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="chart-models" className="py-4 max-h-[52vh] overflow-y-auto">
+              <div>
+                <h3 className="text-sm font-medium mb-3">Chart Extraction Model</h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  This only controls chart JSON/preview extraction in the CHARTS tab. Markdown/LaTeX OCR is unchanged.
+                </p>
+                <RadioGroup value={selectedChartModel} onValueChange={setSelectedChartModel}>
+                  {CHART_MODELS.map((model) => (
+                    <div key={model.id} className="flex items-start space-x-2 mb-3">
+                      <RadioGroupItem value={model.id} id={`chart-model-${model.id}`} disabled={!isChartModelAvailable(model.id)} />
+                      <div className="grid gap-1">
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor={`chart-model-${model.id}`} className="font-medium">
+                            {model.name}
+                          </Label>
+                          {!isChartModelAvailable(model.id) && (
+                            <span className="text-xs px-2 py-0.5 bg-red-100 rounded-full text-red-700">Unavailable</span>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-500">{model.description}</p>
+                        {!isChartModelAvailable(model.id) && chartModelInfo[model.id]?.availability_note && (
+                          <p className="text-xs text-red-600">{chartModelInfo[model.id]?.availability_note}</p>
+                        )}
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {model.strengths.map((strength) => (
+                            <span key={`${model.id}-${strength}`} className="text-xs px-2 py-0.5 bg-green-50 text-green-700 rounded-full">
                               {strength}
                             </span>
                           ))}

@@ -12,6 +12,25 @@ type Segment = {
   confidence: number
 }
 
+type ChartValidationStatus = 'valid' | 'malformed' | 'schema_mismatch'
+
+type NormalizedChart = {
+  id: string
+  page: number | null
+  chart_type: string | null
+  series: unknown[]
+  confidence: number | null
+  title: string | null
+  x_label: string | null
+  y_label: string | null
+  preview_image_data_url: string | null
+  raw: unknown
+  json_preview: string
+  validation_status: ChartValidationStatus
+  validation_error: string | null
+  flags: string[]
+}
+
 function backendBaseUrl(): string {
   return process.env.FASTAPI_BASE_URL || 'http://127.0.0.1:8000'
 }
@@ -123,6 +142,94 @@ function markdownToSegments(markdown: string): Segment[] {
 
   pushCurrent()
   return segments
+}
+
+function normalizeChartItem(item: unknown, index: number): NormalizedChart {
+  const fallbackId = `chart-${index + 1}`
+  const malformedFromRaw = (rawText: string, err: string): NormalizedChart => ({
+    id: fallbackId,
+    page: null,
+    chart_type: null,
+    series: [],
+    confidence: null,
+    title: null,
+    x_label: null,
+    y_label: null,
+    preview_image_data_url: null,
+    raw: rawText,
+    json_preview: rawText,
+    validation_status: 'malformed',
+    validation_error: err,
+    flags: [],
+  })
+
+  let obj: Record<string, unknown>
+  if (typeof item === 'string') {
+    try {
+      const parsed = JSON.parse(item)
+      if (!parsed || typeof parsed !== 'object') {
+        return malformedFromRaw(item, 'Parsed JSON is not an object')
+      }
+      obj = parsed as Record<string, unknown>
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unable to parse chart JSON'
+      return malformedFromRaw(item, msg)
+    }
+  } else if (item && typeof item === 'object') {
+    obj = item as Record<string, unknown>
+  } else {
+    return malformedFromRaw(String(item), 'Chart payload is not an object')
+  }
+
+  const id = safeString(obj.id, fallbackId)
+  const page = Number.isFinite(Number(obj.page)) ? Number(obj.page) : null
+  const chartType = safeString(obj.chart_type, '')
+  const series = Array.isArray(obj.series) ? obj.series : []
+  const confidence = Number.isFinite(Number(obj.confidence)) ? Number(obj.confidence) : null
+  const flags = Array.isArray(obj.flags)
+    ? obj.flags.filter((flag): flag is string => typeof flag === 'string')
+    : []
+
+  const missing: string[] = []
+  if (!id) missing.push('id')
+  if (page === null) missing.push('page')
+  if (!chartType) missing.push('chart_type')
+  if (!Array.isArray(obj.series)) missing.push('series')
+  if (confidence === null) missing.push('confidence')
+
+  let validationStatus: ChartValidationStatus = missing.length === 0 ? 'valid' : 'schema_mismatch'
+  let validationError: string | null =
+    missing.length === 0 ? null : `Missing/invalid required fields: ${missing.join(', ')}`
+
+  const inferredTopology = flags.includes('inferred-edges') || flags.includes('topology-unverified')
+  if (inferredTopology) {
+    validationStatus = 'schema_mismatch'
+    validationError =
+      'Topology is OCR-inferred (not vision-verified). Review and correct edges manually before export.'
+  }
+
+  const normalized: NormalizedChart = {
+    id: id || fallbackId,
+    page,
+    chart_type: chartType || null,
+    series,
+    confidence,
+    title: safeString(obj.title, '') || null,
+    x_label: safeString(obj.x_label, '') || null,
+    y_label: safeString(obj.y_label, '') || null,
+    preview_image_data_url: safeString(obj.preview_image_data_url, '') || null,
+    raw: obj.raw ?? obj,
+    json_preview: JSON.stringify(obj, null, 2),
+    validation_status: validationStatus,
+    validation_error: validationError,
+    flags,
+  }
+  return normalized
+}
+
+function normalizeCharts(payload: Record<string, unknown>): NormalizedChart[] {
+  const rawCharts = Array.isArray(payload.charts) ? payload.charts : []
+  return rawCharts.map((item, idx) => normalizeChartItem(item, idx))
 }
 
 function delay(ms: number): Promise<void> {
@@ -328,6 +435,15 @@ export function createModelRoute(frontendModel: string) {
         segments: markdownToSegments(markdown),
         backendModel: payload?.model_id || frontendModel,
         execution,
+        charts: normalizeCharts(payload),
+        chart_execution:
+          payload?.chart_execution && typeof payload.chart_execution === 'object'
+            ? payload.chart_execution
+            : {
+                engine_used: 'none',
+                fallback_used: false,
+                note: 'Chart sidecar unavailable',
+              },
         requestId: reqId,
       })
     } catch (error) {
