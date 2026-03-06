@@ -124,6 +124,7 @@ def _build_graph_preview(nodes: list[str], edges: list[dict[str, Any]], title: s
 
     edge_svg: list[str] = []
     label_svg: list[str] = []
+    occupied_labels: list[tuple[float, float]] = []
     for edge in edges:
         s = str(edge.get("source", ""))
         t = str(edge.get("target", ""))
@@ -132,10 +133,31 @@ def _build_graph_preview(nodes: list[str], edges: list[dict[str, Any]], title: s
         x1, y1 = positions[s]
         x2, y2 = positions[t]
         edge_svg.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="#334155" stroke-width="2"/>')
-        mx = (x1 + x2) / 2
-        my = (y1 + y2) / 2
+        mx = (x1 + x2) / 2.0
+        my = (y1 + y2) / 2.0
+        dx = x2 - x1
+        dy = y2 - y1
+        length = max(math.hypot(dx, dy), 1.0)
+        nx = -dy / length
+        ny = dx / length
+        lx = mx + nx * 10.0
+        ly = my + ny * 10.0
+        for _ in range(2):
+            if any(math.hypot(lx - ox, ly - oy) < 18.0 for ox, oy in occupied_labels):
+                lx += nx * 8.0
+                ly += ny * 8.0
+            else:
+                break
+        occupied_labels.append((lx, ly))
         weight = html.escape(str(edge.get("weight", "")))
-        label_svg.append(f'<text x="{mx:.1f}" y="{my - 4:.1f}" font-size="11" fill="#111827">{weight}</text>')
+        text_w = max(10.0, float(len(weight) * 6))
+        label_svg.append(
+            f'<rect x="{lx - text_w/2 - 3:.1f}" y="{ly - 11:.1f}" width="{text_w + 6:.1f}" height="14" '
+            'rx="3" fill="#ffffff" fill-opacity="0.9" stroke="#cbd5e1" stroke-width="0.7"/>'
+        )
+        label_svg.append(
+            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle" font-size="11" fill="#111827">{weight}</text>'
+        )
 
     node_svg: list[str] = []
     for node in nodes:

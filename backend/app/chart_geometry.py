@@ -194,6 +194,7 @@ def _build_geometry_preview(
 
     edge_svg: list[str] = []
     weight_svg: list[str] = []
+    occupied_labels: list[tuple[float, float]] = []
     for edge in edges:
         s = str(edge.get("source", ""))
         t = str(edge.get("target", ""))
@@ -206,10 +207,31 @@ def _build_geometry_preview(
         )
         w = edge.get("weight")
         if w is not None:
-            mx = (x1 + x2) / 2
-            my = (y1 + y2) / 2
+            mx = (x1 + x2) / 2.0
+            my = (y1 + y2) / 2.0
+            dx = x2 - x1
+            dy = y2 - y1
+            length = max(math.hypot(dx, dy), 1.0)
+            nx = -dy / length
+            ny = dx / length
+            lx = mx + nx * 14.0
+            ly = my + ny * 14.0
+            # Avoid collisions: push farther out if another label is too close.
+            for _ in range(3):
+                if any(math.hypot(lx - ox, ly - oy) < 22.0 for ox, oy in occupied_labels):
+                    lx += nx * 10.0
+                    ly += ny * 10.0
+                else:
+                    break
+            occupied_labels.append((lx, ly))
+            text = html.escape(str(w))
+            text_w = max(12.0, float(len(text) * 7))
             weight_svg.append(
-                f'<text x="{mx:.1f}" y="{my - 4:.1f}" font-size="12" fill="#111827">{html.escape(str(w))}</text>'
+                f'<rect x="{lx - text_w/2 - 3:.1f}" y="{ly - 12:.1f}" width="{text_w + 6:.1f}" height="16" '
+                'rx="4" fill="#ffffff" fill-opacity="0.92" stroke="#cbd5e1" stroke-width="0.8"/>'
+            )
+            weight_svg.append(
+                f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="middle" font-size="12" fill="#111827">{text}</text>'
             )
 
     node_svg: list[str] = []
