@@ -50,6 +50,7 @@ jobs:
         run: npm run python:prepare
 
       - name: Generate app icons
+        if: runner.os == 'macOS'
         run: npm run electron:icons
 
       - name: Build Next app
