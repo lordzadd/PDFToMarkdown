@@ -143,7 +143,11 @@ if [[ -z "${BUILDER_PY:-}" ]]; then
   exit 1
 fi
 
-"$BUILDER_PY" "${BUILDER_PY_ARGS[@]}" -m venv "$PY_RUNTIME_DIR"
+if [[ ${#BUILDER_PY_ARGS[@]} -gt 0 ]]; then
+  "$BUILDER_PY" "${BUILDER_PY_ARGS[@]}" -m venv "$PY_RUNTIME_DIR"
+else
+  "$BUILDER_PY" -m venv "$PY_RUNTIME_DIR"
+fi
 
 if [[ "$IS_WINDOWS" -eq 1 ]]; then
   "$PY_BIN" -m pip install --upgrade pip setuptools wheel
@@ -156,4 +160,8 @@ else
 fi
 
 echo "$REQ_HASH" > "$STAMP_FILE"
-echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (builder: $BUILDER_PY ${BUILDER_PY_ARGS[*]})"
+if [[ ${#BUILDER_PY_ARGS[@]} -gt 0 ]]; then
+  echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (builder: $BUILDER_PY ${BUILDER_PY_ARGS[*]})"
+else
+  echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (builder: $BUILDER_PY)"
+fi
