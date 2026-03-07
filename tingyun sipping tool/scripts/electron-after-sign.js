@@ -12,6 +12,20 @@ exports.default = async function afterSign(context) {
     console.warn(`[afterSign] App bundle not found at ${appPath}, skipping`)
     return
   }
+  const signingMode = process.env.TINGYUN_SIGNING_MODE || "adhoc"
+  if (signingMode === "official") {
+    const verifyOfficial = spawnSync(
+      "codesign",
+      ["--verify", "--deep", "--strict", "--verbose=2", appPath],
+      { stdio: "inherit" }
+    )
+    if (verifyOfficial.status !== 0) {
+      throw new Error(
+        `[afterSign] official codesign verification failed with exit code ${verifyOfficial.status}`
+      )
+    }
+    return
+  }
   const result = spawnSync(
     "codesign",
     ["--force", "--deep", "--sign", "-", appPath],
