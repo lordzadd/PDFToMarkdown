@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACKEND_REQ="$ROOT_DIR/backend/requirements.txt"
 PY_RUNTIME_DIR="$ROOT_DIR/tingyun sipping tool/build/python-env"
+PY_RUNTIME_ARCHIVE="$ROOT_DIR/tingyun sipping tool/build/python-env.tar.gz"
 IS_WINDOWS=0
 if [[ "${OS:-}" == "Windows_NT" || "$(uname -s)" =~ MINGW|MSYS|CYGWIN ]]; then
   IS_WINDOWS=1
@@ -14,6 +15,11 @@ else
   PY_BIN="$PY_RUNTIME_DIR/bin/python3"
 fi
 STAMP_FILE="$PY_RUNTIME_DIR/.requirements.sha256"
+
+create_runtime_archive() {
+  rm -f "$PY_RUNTIME_ARCHIVE"
+  tar -czf "$PY_RUNTIME_ARCHIVE" -C "$(dirname "$PY_RUNTIME_DIR")" "$(basename "$PY_RUNTIME_DIR")"
+}
 
 if [[ "${SKIP_PYTHON_PREPARE:-0}" == "1" ]]; then
   mkdir -p "$PY_RUNTIME_DIR"
@@ -120,6 +126,9 @@ fi
 if [[ -x "$PY_BIN" && -f "$STAMP_FILE" ]]; then
   CURRENT_HASH="$(cat "$STAMP_FILE" || true)"
   if [[ "$CURRENT_HASH" == "$REQ_HASH" ]]; then
+    if [[ ! -f "$PY_RUNTIME_ARCHIVE" ]]; then
+      create_runtime_archive
+    fi
     echo "Bundled python runtime is up to date."
     exit 0
   fi
@@ -169,8 +178,9 @@ else
 fi
 
 echo "$REQ_HASH" > "$STAMP_FILE"
+create_runtime_archive
 if [[ ${#BUILDER_PY_ARGS[@]} -gt 0 ]]; then
-  echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (builder: $BUILDER_PY ${BUILDER_PY_ARGS[*]})"
+  echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (archive: $PY_RUNTIME_ARCHIVE, builder: $BUILDER_PY ${BUILDER_PY_ARGS[*]})"
 else
-  echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (builder: $BUILDER_PY)"
+  echo "Prepared bundled python runtime at: $PY_RUNTIME_DIR (archive: $PY_RUNTIME_ARCHIVE, builder: $BUILDER_PY)"
 fi

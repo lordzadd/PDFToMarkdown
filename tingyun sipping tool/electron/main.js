@@ -176,13 +176,56 @@ function resolveBackendRoot() {
   return fs.existsSync(packagedBackend) ? packagedBackend : null
 }
 
-function resolveBundledPythonPath() {
+function bundledPythonSegments() {
   const runtimeSegments = process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python3"]
+  return runtimeSegments
+}
+
+function extractBundledPythonRuntime() {
+  const archivePath = path.join(process.resourcesPath, "python-env.tar.gz")
+  if (!fs.existsSync(archivePath)) {
+    writeLog("warn", "Bundled python archive not found", { archivePath })
+    return null
+  }
+  const runtimeRoot = path.join(app.getPath("userData"), "runtime")
+  const extractedDir = path.join(runtimeRoot, "python-env")
+  const markerPath = path.join(extractedDir, ".extracted-version")
+  const currentVersion = app.getVersion()
+  const currentPath = path.join(extractedDir, ...bundledPythonSegments())
+  if (fs.existsSync(currentPath) && fs.existsSync(markerPath)) {
+    const marker = fs.readFileSync(markerPath, "utf8").trim()
+    if (marker === currentVersion) {
+      return extractedDir
+    }
+  }
+  fs.rmSync(extractedDir, { recursive: true, force: true })
+  fs.mkdirSync(runtimeRoot, { recursive: true })
+  const result = spawnSync(
+    "tar",
+    ["-xzf", archivePath, "-C", runtimeRoot],
+    { encoding: "utf8" },
+  )
+  if (result.status !== 0) {
+    writeLog("error", "Failed to extract bundled python archive", {
+      archivePath,
+      status: result.status,
+      stderr: stripAnsi(result.stderr || "").slice(0, 500),
+    })
+    return null
+  }
+  fs.writeFileSync(markerPath, `${currentVersion}\n`, "utf8")
+  return extractedDir
+}
+
+function resolveBundledPythonPath() {
+  const runtimeSegments = bundledPythonSegments()
   if (isDev) {
     const devBundled = path.resolve(__dirname, "../build/python-env", ...runtimeSegments)
     return fs.existsSync(devBundled) ? devBundled : null
   }
-  const packagedBundled = path.join(process.resourcesPath, "python-env", ...runtimeSegments)
+  const extractedDir = extractBundledPythonRuntime()
+  if (!extractedDir) return null
+  const packagedBundled = path.join(extractedDir, ...runtimeSegments)
   return fs.existsSync(packagedBundled) ? packagedBundled : null
 }
 
@@ -239,8 +282,9 @@ async function ensureBackendServer() {
   }
   writeLog("info", "Attempting backend startup", { backendRoot, baseUrl, isDev })
 
+  const bundledPython = resolveBundledPythonPath()
   const pythonCandidates = [
-    resolveBundledPythonPath() ? { cmd: resolveBundledPythonPath(), prefixArgs: [] } : null,
+    bundledPython ? { cmd: bundledPython, prefixArgs: [] } : null,
     process.env.PYTHON_PATH ? { cmd: process.env.PYTHON_PATH, prefixArgs: [] } : null,
     process.platform === "win32" ? { cmd: "py", prefixArgs: ["-3"] } : null,
     { cmd: "/usr/bin/arch", prefixArgs: ["-arm64", "/usr/bin/python3"] },
