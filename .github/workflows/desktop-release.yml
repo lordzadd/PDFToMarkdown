@@ -78,17 +78,23 @@ jobs:
       - name: Build Next app
         run: npm run build
 
-      - name: Build macOS artifacts
-        if: runner.os == 'macOS'
+      - name: Build macOS artifacts (official signing)
+        if: runner.os == 'macOS' && steps.apple_signing.outputs.enabled == 'true'
         run: npx electron-builder --mac dmg zip --arm64 --publish never
         env:
-          TINGYUN_SIGNING_MODE: ${{ steps.apple_signing.outputs.enabled == 'true' && 'official' || 'adhoc' }}
+          TINGYUN_SIGNING_MODE: official
           CSC_LINK: ${{ secrets.APPLE_CERT_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_KEY: ${{ steps.apple_signing.outputs.api_key_path }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+
+      - name: Build macOS artifacts (adhoc fallback)
+        if: runner.os == 'macOS' && steps.apple_signing.outputs.enabled != 'true'
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
+        env:
+          TINGYUN_SIGNING_MODE: adhoc
 
       - name: Build Windows artifacts
         if: runner.os == 'Windows'
