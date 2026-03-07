@@ -1,6 +1,6 @@
 {
   "name": "my-v0-project",
-  "version": "0.1.8",
+  "version": "0.1.10",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -103,6 +103,7 @@
   "build": {
     "appId": "com.tingyun.snippingtool",
     "productName": "Tingyun Snipping Tool",
+    "afterSign": "scripts/electron-after-sign.js",
     "files": [
       "electron/**/*",
       ".next/**/*",
