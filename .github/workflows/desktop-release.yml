@@ -49,12 +49,15 @@ jobs:
           SKIP_PYTHON_PREPARE: "1"
         run: npm run python:prepare
 
+      - name: Generate app icons
+        run: npm run electron:icons
+
       - name: Build Next app
         run: npm run build
 
       - name: Build macOS artifacts
         if: runner.os == 'macOS'
-        run: npx electron-builder --mac dmg zip --arm64 --publish never
+        run: npx electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=-
 
       - name: Build Windows artifacts
         if: runner.os == 'Windows'
