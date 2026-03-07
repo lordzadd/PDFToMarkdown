@@ -69,11 +69,7 @@ import sys
 raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
 PY
     then
-      if [[ "${probe_args[*]}" == "-3" ]]; then
-        echo "$candidate -3"
-      else
-        echo "$candidate"
-      fi
+      echo "$candidate"
       return 0
     fi
   done
@@ -104,11 +100,19 @@ fi
 
 if command -v shasum >/dev/null 2>&1; then
   REQ_HASH="$(shasum -a 256 "$BACKEND_REQ" | awk '{print $1}')"
+elif command -v sha256sum >/dev/null 2>&1; then
+  REQ_HASH="$(sha256sum "$BACKEND_REQ" | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+  REQ_HASH="$(openssl dgst -sha256 "$BACKEND_REQ" | awk '{print $NF}')"
 else
+  BACKEND_REQ_FOR_PY="$BACKEND_REQ"
+  if [[ "$IS_WINDOWS" -eq 1 ]] && command -v cygpath >/dev/null 2>&1; then
+    BACKEND_REQ_FOR_PY="$(cygpath -w "$BACKEND_REQ")"
+  fi
   REQ_HASH="$(python3 - <<PY
 import hashlib
 from pathlib import Path
-print(hashlib.sha256(Path("$BACKEND_REQ").read_bytes()).hexdigest())
+print(hashlib.sha256(Path(r"""$BACKEND_REQ_FOR_PY""").read_bytes()).hexdigest())
 PY
 )"
 fi
