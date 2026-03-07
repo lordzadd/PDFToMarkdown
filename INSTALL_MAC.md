@@ -21,6 +21,16 @@ xattr -dr com.apple.quarantine "/Applications/Tingyun Snipping Tool.app"
 
 After this one-time trust step, normal launch should work.
 
+## Screenshot Permission Reset (macOS)
+
+If the snipping tool opens but cannot detect screens, reset Screen Recording permission:
+
+1. Open `System Settings` -> `Privacy & Security` -> `Screen & System Audio Recording`.
+2. Find `Tingyun Snipping Tool`, click it, then click the `-` button to remove it.
+3. Launch the app again and trigger screenshot capture.
+4. When macOS prompts, allow screen recording access.
+5. Return to the same settings page and confirm `Tingyun Snipping Tool` is enabled.
+
 ## Notes
 
 - If macOS still says the app is blocked, repeat the `xattr` command and reopen via right-click `Open`.
