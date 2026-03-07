@@ -159,7 +159,7 @@ else
   # Ensure bundled venv python launchers do not symlink outside the app bundle.
   VENV_BIN_DIR="$PY_RUNTIME_DIR/bin"
   PY_REAL="$("$VENV_BIN_DIR/python3" -c 'import os,sys; print(os.path.realpath(sys.executable))')"
-  PY_VERSION_NAME="$("$VENV_BIN_DIR/python3" -c 'import sys; print(f\"python{sys.version_info.major}.{sys.version_info.minor}\")')"
+  PY_VERSION_NAME="$("$VENV_BIN_DIR/python3" -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')"
   rm -f "$VENV_BIN_DIR/$PY_VERSION_NAME"
   cp "$PY_REAL" "$VENV_BIN_DIR/$PY_VERSION_NAME"
   chmod +x "$VENV_BIN_DIR/$PY_VERSION_NAME"
