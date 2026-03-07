@@ -46,11 +46,25 @@ pick_builder_python() {
   for candidate in "${candidates[@]}"; do
     [[ -n "${candidate:-}" ]] || continue
     [[ -x "$candidate" ]] || continue
-    local probe_args=()
+    local -a probe_args
+    probe_args=()
     if [[ "$candidate" == *"/py" || "$candidate" == *"/py.exe" ]]; then
       probe_args=(-3)
     fi
-    if "$candidate" "${probe_args[@]}" - <<'PY' >/dev/null 2>&1
+    if [[ ${#probe_args[@]} -gt 0 ]]; then
+      if "$candidate" "${probe_args[@]}" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+      then
+        if [[ "${probe_args[*]}" == "-3" ]]; then
+          echo "$candidate -3"
+        else
+          echo "$candidate"
+        fi
+        return 0
+      fi
+    elif "$candidate" - <<'PY' >/dev/null 2>&1
 import sys
 raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
 PY
