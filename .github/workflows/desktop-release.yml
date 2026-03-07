@@ -56,7 +56,7 @@ jobs:
 
       - name: Build macOS artifacts
         if: runner.os == 'macOS'
-        run: npx electron-builder --mac dmg zip --arm64 --publish never -c.mac.identity=-
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
 
       - name: Build Windows artifacts
         if: runner.os == 'Windows'
